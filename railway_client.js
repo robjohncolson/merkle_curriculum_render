@@ -2,10 +2,23 @@
   // This replaces direct Supabase calls with Railway server calls
 
   // Configuration
-  const rawRailwayServerUrl = window.RAILWAY_SERVER_URL || 'https://your-app.up.railway.app';
-  const RAILWAY_SERVER_URL = (rawRailwayServerUrl || '')
-      .trim()
-      .replace(/\/+$/, '');
+  const rawRailwayServerUrl = window.RAILWAY_SERVER_URL;
+  const RAILWAY_SERVER_URL = (() => {
+      if (typeof rawRailwayServerUrl !== 'string') {
+          return '';
+      }
+
+      const trimmed = rawRailwayServerUrl.trim();
+      if (!trimmed) {
+          return '';
+      }
+
+      const normalizedScheme = trimmed
+          .replace(/^ws:\/\//i, 'http://')
+          .replace(/^wss:\/\//i, 'https://');
+
+      return normalizedScheme.replace(/\/+$/, '');
+  })();
   const USE_RAILWAY = window.USE_RAILWAY || false;
 
   const HashUtils = window.HashUtils || {};
