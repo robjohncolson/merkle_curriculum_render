@@ -302,6 +302,231 @@ async function verifyLastNAnswers(username, n = 10) {
 window.auditUserUploads = auditUserUploads;
 window.verifyLastNAnswers = verifyLastNAnswers;
 
+function resolveRailwayRestBase() {
+    const rawUrl = window.RAILWAY_SERVER_URL;
+    if (typeof rawUrl !== 'string') {
+        return '';
+    }
+
+    const trimmed = rawUrl.trim();
+    if (!trimmed) {
+        return '';
+    }
+
+    return trimmed
+        .replace(/^ws:\/\//i, 'http://')
+        .replace(/^wss:\/\//i, 'https://')
+        .replace(/\/+$/, '');
+}
+
+function ensureHashUtils() {
+    if (!window.HashUtils) {
+        console.log('HashUtils not available yet – ensure js/hash_utils.js has loaded.');
+        return null;
+    }
+    return window.HashUtils;
+}
+
+function summarizeManifest(manifest = { units: {} }) {
+    const units = manifest.units || {};
+    const summary = Object.entries(units).map(([unitId, data]) => ({
+        unit: unitId,
+        hash: data.hash,
+        lessons: data.lessons ? Object.keys(data.lessons).length : 0,
+        answers: Object.values(data.lessons || {}).reduce((total, lesson) => total + (lesson.answerCount || 0), 0)
+    }));
+
+    console.table(summary);
+    return summary;
+}
+
+async function fetchJsonWithDiagnostics(url, label) {
+    console.log(`Fetching ${label || url} → ${url}`);
+
+    const response = await fetch(url);
+    const contentType = response.headers.get('content-type') || '';
+    const textBody = await response.text();
+
+    if (!response.ok) {
+        throw new Error(`${label || 'Request'} failed (${response.status}). Body snippet: ${textBody.slice(0, 200)}`);
+    }
+
+    if (!/application\/json/i.test(contentType)) {
+        throw new Error(`${label || 'Request'} returned ${contentType || 'no content-type'}: ${textBody.slice(0, 200)}`);
+    }
+
+    try {
+        return JSON.parse(textBody);
+    } catch (error) {
+        throw new Error(`${label || 'Request'} returned invalid JSON: ${error.message}`);
+    }
+}
+
+function buildLessonLookup(snapshot) {
+    const lookup = {};
+    const units = snapshot.units || {};
+    Object.entries(units).forEach(([unitId, unit]) => {
+        const lessons = unit.lessons || {};
+        Object.entries(lessons).forEach(([lessonId, lesson]) => {
+            lookup[lessonId] = { unitId, hash: lesson.hash, answerCount: lesson.answerCount };
+        });
+    });
+    return lookup;
+}
+
+function computeLocalManifest() {
+    const HashUtils = ensureHashUtils();
+    if (!HashUtils || typeof HashUtils.buildLocalSyncIndex !== 'function') {
+        console.log('Local manifest unavailable – HashUtils.buildLocalSyncIndex missing.');
+        return { units: {} };
+    }
+
+    const snapshot = HashUtils.buildLocalSyncIndex();
+    console.log('=== Local Merkle Snapshot ===');
+    summarizeManifest(snapshot);
+    return snapshot;
+}
+
+async function fetchRemoteManifest() {
+    const base = resolveRailwayRestBase();
+    if (!base) {
+        console.log('Set window.RAILWAY_SERVER_URL to your Railway deployment first.');
+        return { units: {} };
+    }
+
+    const manifest = await fetchJsonWithDiagnostics(`${base}/api/sync/manifest`, 'Manifest');
+    console.log('=== Remote Manifest ===');
+    summarizeManifest(manifest);
+    return manifest;
+}
+
+async function fetchRemoteUnitManifest(unitId) {
+    if (!unitId) {
+        throw new Error('Provide a unit id, e.g. fetchRemoteUnitManifest("1").');
+    }
+
+    const base = resolveRailwayRestBase();
+    if (!base) {
+        console.log('Set window.RAILWAY_SERVER_URL to your Railway deployment first.');
+        return null;
+    }
+
+    const unitManifest = await fetchJsonWithDiagnostics(`${base}/api/sync/unit/${encodeURIComponent(unitId)}`, `Unit ${unitId} manifest`);
+    console.log(`=== Remote Lesson Hashes for Unit ${unitId} ===`);
+    const lessons = unitManifest.lessons || {};
+    const table = Object.entries(lessons).map(([lessonId, data]) => ({
+        lesson: lessonId,
+        hash: data.hash,
+        answers: data.answerCount,
+        updated: data.latestTimestamp
+    }));
+    console.table(table);
+    return unitManifest;
+}
+
+async function fetchRemoteLessonData(lessonId) {
+    if (!lessonId) {
+        throw new Error('Provide a lesson id, e.g. fetchRemoteLessonData("U1-L4").');
+    }
+
+    const base = resolveRailwayRestBase();
+    if (!base) {
+        console.log('Set window.RAILWAY_SERVER_URL to your Railway deployment first.');
+        return { answers: [] };
+    }
+
+    const payload = await fetchJsonWithDiagnostics(`${base}/api/data/lesson/${encodeURIComponent(lessonId)}`, `Lesson ${lessonId} data`);
+    console.log(`=== Remote Lesson Data for ${lessonId} ===`);
+    console.log(payload);
+    return payload;
+}
+
+async function compareMerkleWithServer(targetUnitId) {
+    const localManifest = computeLocalManifest();
+    const remoteManifest = await fetchRemoteManifest();
+
+    const localUnits = localManifest.units || {};
+    const remoteUnits = remoteManifest.units || {};
+    const allUnitIds = Array.from(new Set([...Object.keys(localUnits), ...Object.keys(remoteUnits)]));
+
+    const unitDiffs = allUnitIds.map((unitId) => ({
+        unit: unitId,
+        local: localUnits[unitId]?.hash || '—',
+        remote: remoteUnits[unitId]?.hash || '—',
+        match: localUnits[unitId]?.hash === remoteUnits[unitId]?.hash
+    }));
+
+    console.log('=== Unit Hash Comparison ===');
+    console.table(unitDiffs);
+
+    const mismatchedUnits = unitDiffs.filter((row) => row.match === false).map((row) => row.unit);
+    const focusUnits = targetUnitId ? [targetUnitId] : mismatchedUnits;
+
+    for (const unitId of focusUnits) {
+        const unitManifest = await fetchRemoteUnitManifest(unitId);
+        const localLessons = (localUnits[unitId] && localUnits[unitId].lessons) || {};
+        const remoteLessons = (unitManifest && unitManifest.lessons) || {};
+
+        const lessonIds = Array.from(new Set([...Object.keys(localLessons), ...Object.keys(remoteLessons)]));
+        const lessonDiffs = lessonIds.map((lessonId) => ({
+            lesson: lessonId,
+            local: localLessons[lessonId]?.hash || '—',
+            remote: remoteLessons[lessonId]?.hash || '—',
+            match: localLessons[lessonId]?.hash === remoteLessons[lessonId]?.hash
+        }));
+
+        console.log(`=== Lesson Hash Comparison for Unit ${unitId} ===`);
+        console.table(lessonDiffs);
+    }
+
+    if (mismatchedUnits.length === 0) {
+        console.log('✅ Local data matches the remote manifest.');
+    } else {
+        console.log('⚠️ Found mismatched unit hashes. Lesson breakdown above.');
+    }
+
+    return { unitDiffs };
+}
+
+async function verifyLessonHashAgainstServer(lessonId) {
+    const HashUtils = ensureHashUtils();
+    if (!HashUtils || typeof HashUtils.computeLessonHash !== 'function') {
+        console.log('HashUtils.computeLessonHash unavailable.');
+        return null;
+    }
+
+    const lessonData = await fetchRemoteLessonData(lessonId);
+    const answers = lessonData.answers || [];
+    const hash = HashUtils.computeLessonHash(answers.map((answer) => ({
+        username: answer.username,
+        question_id: answer.question_id,
+        answer_value: answer.answer_value,
+        timestamp: HashUtils.normalizeTimestamp(answer.timestamp)
+    })));
+
+    console.log(`Lesson ${lessonId} hash from remote payload: ${hash}`);
+
+    const localManifest = computeLocalManifest();
+    const lookup = buildLessonLookup(localManifest);
+    const localHash = lookup[lessonId]?.hash;
+
+    if (localHash) {
+        console.log(`Local lesson hash: ${localHash}`);
+        console.log(hash === localHash ? '✅ Hashes match.' : '⚠️ Hash mismatch detected.');
+    } else {
+        console.log('Local lesson hash unavailable – lesson missing locally.');
+    }
+
+    return { remoteHash: hash, localHash };
+}
+
+window.computeLocalMerkleSnapshot = computeLocalManifest;
+window.fetchRemoteMerkleManifest = fetchRemoteManifest;
+window.fetchRemoteUnitManifest = fetchRemoteUnitManifest;
+window.fetchRemoteLessonData = fetchRemoteLessonData;
+window.compareMerkleWithServer = compareMerkleWithServer;
+window.verifyLessonHashAgainstServer = verifyLessonHashAgainstServer;
+
 console.log('🔧 Sync diagnostic functions loaded. Available commands:');
 console.log('  checkLocalPeerData() - See all local peer data');
 console.log('  checkClassData() - See classData structure');
@@ -310,3 +535,7 @@ console.log('  compareLocalVsSupabase() - Compare local vs cloud data');
 console.log('  pullAllPeerData() - Pull all peer data from Supabase');
 console.log('  auditUserUploads(username) - Audit one user\'s local vs cloud');
 console.log('  verifyLastNAnswers(username, n) - Verify last N uploads reached cloud');
+console.log('  computeLocalMerkleSnapshot() - Summarize local unit/lesson hashes');
+console.log('  fetchRemoteMerkleManifest() - View the server manifest');
+console.log('  compareMerkleWithServer(unit?) - Diff local vs remote hashes');
+console.log('  verifyLessonHashAgainstServer(lessonId) - Check one lesson payload');
