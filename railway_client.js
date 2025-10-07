@@ -2,6 +2,23 @@
   // This replaces direct Supabase calls with Railway server calls
 
   // Configuration
+  const rawRailwayServerUrl = window.RAILWAY_SERVER_URL;
+  const RAILWAY_SERVER_URL = (() => {
+      if (typeof rawRailwayServerUrl !== 'string') {
+          return '';
+      }
+
+      const trimmed = rawRailwayServerUrl.trim();
+      if (!trimmed) {
+          return '';
+      }
+
+      const normalizedScheme = trimmed
+          .replace(/^ws:\/\//i, 'http://')
+          .replace(/^wss:\/\//i, 'https://');
+
+      return normalizedScheme.replace(/\/+$/, '');
+  })();
   const rawRailwayServerUrl = window.RAILWAY_SERVER_URL || 'https://your-app.up.railway.app';
   const RAILWAY_SERVER_URL = rawRailwayServerUrl.replace(/\/+$/, '');
   const USE_RAILWAY = window.USE_RAILWAY || false;
@@ -10,6 +27,30 @@
   const manifestStorageKey = 'railway_manifest_cache_v1';
 
   let lastSyncSummary = null;
+
+  function buildRailwayUrl(path = '') {
+      if (!RAILWAY_SERVER_URL) {
+          return path;
+      }
+
+      const normalizedPath = `${path || ''}`
+          .trim()
+          .replace(/^\/+/, '');
+
+      if (!normalizedPath) {
+          return RAILWAY_SERVER_URL;
+      }
+
+      return `${RAILWAY_SERVER_URL}/${normalizedPath}`;
+  }
+
+  function buildWebSocketUrl(path = '') {
+      const httpUrl = buildRailwayUrl(path);
+      if (!httpUrl) return httpUrl;
+      return httpUrl
+          .replace(/^https:\/\//i, 'wss://')
+          .replace(/^http:\/\//i, 'ws://');
+  }
 
   function safeJsonParse(value, fallback = null) {
       try {
@@ -214,6 +255,7 @@
       if (!USE_RAILWAY) return null;
 
       try {
+          const manifest = await fetchJson(buildRailwayUrl('/api/sync/manifest'));
           const manifest = await fetchJson(`${RAILWAY_SERVER_URL}/api/sync/manifest`);
           saveStoredManifest({
               generatedAt: manifest.generatedAt,
@@ -247,6 +289,7 @@
           let answersApplied = 0;
 
           for (const unitId of unitsNeedingDetail) {
+              const unitManifest = await fetchJson(buildRailwayUrl(`/api/sync/unit/${unitId}`));
               const unitManifest = await fetchJson(`${RAILWAY_SERVER_URL}/api/sync/unit/${unitId}`);
               const serverLessons = unitManifest.lessons || {};
               const localLessons = localUnits[unitId]?.lessons || {};
@@ -347,8 +390,24 @@
       console.log('🚂 Initializing Railway server connection...');
 
       // Test REST API connection
-      fetch(`${RAILWAY_SERVER_URL}/health`)
-          .then(res => res.json())
+      fetch(buildRailwayUrl('/health'))
+          .then(async res => {
+              if (!res.ok) {
+                  const bodyText = await res.text();
+                  const snippet = bodyText ? bodyText.trim().replace(/\s+/g, ' ').slice(0, 200) : '<empty body>';
+                  throw new Error(`Health check failed (status ${res.status}): ${snippet}`);
+              }
+
+              const contentType = res.headers.get('content-type') || '';
+              if (!contentType.toLowerCase().includes('application/json')) {
+                  const bodyText = await res.text();
+                  const snippet = bodyText ? bodyText.trim().replace(/\s+/g, ' ').slice(0, 200) : '<empty body>';
+                  const typeLabel = contentType || 'unknown';
+                  throw new Error(`Health check returned non-JSON response (status ${res.status}, content-type ${typeLabel}): ${snippet}`);
+              }
+
+              return res.json();
+          })
           .then(data => {
               console.log('✅ Railway server connected:', data);
               connectWebSocket();
@@ -368,7 +427,7 @@
   function connectWebSocket() {
       if (!USE_RAILWAY) return;
 
-      const wsUrl = RAILWAY_SERVER_URL.replace('https://', 'wss://').replace('http://', 'ws://');
+      const wsUrl = buildWebSocketUrl();
 
       try {
           ws = new WebSocket(wsUrl);
@@ -539,7 +598,7 @@
       }
 
       try {
-          const response = await fetch(`${RAILWAY_SERVER_URL}/api/submit-answer`, {
+          const response = await fetch(buildRailwayUrl('/api/submit-answer'), {
               method: 'POST',
               headers: {
                   'Content-Type': 'application/json'
@@ -592,7 +651,7 @@
       if (!USE_RAILWAY) return null;
 
       try {
-          const response = await fetch(`${RAILWAY_SERVER_URL}/api/question-stats/${questionId}`);
+          const response = await fetch(buildRailwayUrl(`/api/question-stats/${questionId}`));
           const stats = await response.json();
 
           console.log(`📊 Stats for ${questionId}:`, stats);
@@ -612,7 +671,7 @@
       }
 
       try {
-          const response = await fetch(`${RAILWAY_SERVER_URL}/api/batch-submit`, {
+          const response = await fetch(buildRailwayUrl('/api/batch-submit'), {
               method: 'POST',
               headers: {
                   'Content-Type': 'application/json'
