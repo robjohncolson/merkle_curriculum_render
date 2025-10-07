@@ -20,6 +20,8 @@
 
       return normalizedScheme.replace(/\/+$/, '');
   })();
+  const rawRailwayServerUrl = window.RAILWAY_SERVER_URL || 'https://your-app.up.railway.app';
+  const RAILWAY_SERVER_URL = rawRailwayServerUrl.replace(/\/+$/, '');
   const USE_RAILWAY = window.USE_RAILWAY || false;
 
   const HashUtils = window.HashUtils || {};
@@ -255,6 +257,7 @@
 
       try {
           const manifest = await fetchJson(buildRailwayUrl('/api/sync/manifest'));
+          const manifest = await fetchJson(`${RAILWAY_SERVER_URL}/api/sync/manifest`);
           saveStoredManifest({
               generatedAt: manifest.generatedAt,
               units: manifest.units || {}
@@ -288,6 +291,7 @@
 
           for (const unitId of unitsNeedingDetail) {
               const unitManifest = await fetchJson(buildRailwayUrl(`/api/sync/unit/${unitId}`));
+              const unitManifest = await fetchJson(`${RAILWAY_SERVER_URL}/api/sync/unit/${unitId}`);
               const serverLessons = unitManifest.lessons || {};
               const localLessons = localUnits[unitId]?.lessons || {};
 
@@ -310,7 +314,7 @@
                       continue; // already in sync
                   }
 
-                  const lessonPayload = await fetchJson(buildRailwayUrl(`/api/data/lesson/${lessonId}`));
+                  const lessonPayload = await fetchJson(`${RAILWAY_SERVER_URL}/api/data/lesson/${lessonId}`);
                   lessonsFetched += 1;
                   const applied = ingestLessonAnswers(lessonId, lessonPayload.answers || []);
                   answersApplied += applied;
