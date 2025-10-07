@@ -1,0 +1,561 @@
+<\!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hash Utils Test Suite</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+        h1 {
+            color: #333;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .test-section h2 {
+            margin-top: 0;
+            color: #555;
+        }
+        .test-result {
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 3px;
+        }
+        .test-pass {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .test-fail {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .summary {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #e9ecef;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .summary.success {
+            background-color: #d4edda;
+        }
+        .summary.failure {
+            background-color: #f8d7da;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .error-details {
+            font-family: monospace;
+            font-size: 12px;
+            margin-top: 5px;
+            padding: 5px;
+            background-color: #f8f9fa;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧪 Hash Utils Test Suite</h1>
+    <button onclick="runAllTests()">Run All Tests</button>
+    <div id="results"></div>
+
+    <script src="hash_utils.js"></script>
+    <script>
+        let testResults = [];
+        let totalTests = 0;
+        let passedTests = 0;
+
+        function assert(condition, message) {
+            if (\!condition) {
+                throw new Error(message || 'Assertion failed');
+            }
+        }
+
+        function assertEqual(actual, expected, message) {
+            if (actual \!== expected) {
+                throw new Error(`${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+            }
+        }
+
+        function assertDeepEqual(actual, expected, message) {
+            if (JSON.stringify(actual) \!== JSON.stringify(expected)) {
+                throw new Error(`${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+            }
+        }
+
+        function assertMatch(value, regex, message) {
+            if (\!regex.test(value)) {
+                throw new Error(`${message}: ${value} does not match ${regex}`);
+            }
+        }
+
+        function runTest(testName, testFn) {
+            totalTests++;
+            try {
+                testFn();
+                passedTests++;
+                testResults.push({ name: testName, passed: true });
+                console.log(`✅ ${testName} passed`);
+            } catch (error) {
+                testResults.push({ name: testName, passed: false, error: error.message });
+                console.error(`❌ ${testName} failed:`, error.message);
+            }
+        }
+
+        // ============================
+        // MD5 HASH FUNCTION TESTS
+        // ============================
+
+        function testMD5BasicFunctionality() {
+            const hash = HashUtils.md5('hello world');
+            assertEqual(typeof hash, 'string', 'MD5 should return a string');
+            assertEqual(hash.length, 32, 'MD5 hash should be 32 characters');
+            assertMatch(hash, /^[0-9a-f]{32}$/, 'MD5 hash should be hexadecimal');
+        }
+
+        function testMD5Deterministic() {
+            const hash1 = HashUtils.md5('test');
+            const hash2 = HashUtils.md5('test');
+            assertEqual(hash1, hash2, 'MD5 should be deterministic');
+        }
+
+        function testMD5DifferentInputs() {
+            const hash1 = HashUtils.md5('hello');
+            const hash2 = HashUtils.md5('world');
+            assert(hash1 \!== hash2, 'Different inputs should produce different hashes');
+        }
+
+        function testMD5KnownValues() {
+            // Known MD5 values for testing
+            assertEqual(HashUtils.md5(''), 'd41d8cd98f00b204e9800998ecf8427e', 'Empty string MD5');
+            assertEqual(HashUtils.md5('The quick brown fox jumps over the lazy dog'), 
+                       '9e107d9d372bb6826bd81d3542a419d6', 'Known text MD5');
+        }
+
+        function testMD5SpecialCharacters() {
+            const hash1 = HashUtils.md5('hello 世界');
+            assert(hash1.length === 32, 'MD5 should handle Unicode');
+            
+            const hash2 = HashUtils.md5('\!@#$%^&*()');
+            assert(hash2.length === 32, 'MD5 should handle special characters');
+        }
+
+        function testMD5LongStrings() {
+            const longString = 'a'.repeat(10000);
+            const hash = HashUtils.md5(longString);
+            assertEqual(hash.length, 32, 'MD5 should handle long strings');
+        }
+
+        // ============================
+        // NORMALIZE TIMESTAMP TESTS
+        // ============================
+
+        function testNormalizeTimestampNumeric() {
+            assertEqual(HashUtils.normalizeTimestamp(1234), 1234, 'Integer timestamp');
+            assertEqual(HashUtils.normalizeTimestamp(1234.567), 1234, 'Float timestamp should truncate');
+            assertEqual(HashUtils.normalizeTimestamp(0), 0, 'Zero timestamp');
+            assertEqual(HashUtils.normalizeTimestamp(-1), -1, 'Negative timestamp');
+        }
+
+        function testNormalizeTimestampString() {
+            assertEqual(HashUtils.normalizeTimestamp('5678'), 5678, 'String numeric timestamp');
+            assertEqual(HashUtils.normalizeTimestamp('9999.123'), 9999, 'String float timestamp');
+        }
+
+        function testNormalizeTimestampISO() {
+            const result = HashUtils.normalizeTimestamp('2024-01-01T00:00:00Z');
+            assert(result > 1700000000000, 'ISO timestamp should parse to reasonable milliseconds');
+            assert(result < 2000000000000, 'ISO timestamp should be in valid range');
+        }
+
+        function testNormalizeTimestampEdgeCases() {
+            assertEqual(HashUtils.normalizeTimestamp(null), 0, 'Null should return 0');
+            assertEqual(HashUtils.normalizeTimestamp(undefined), 0, 'Undefined should return 0');
+            assertEqual(HashUtils.normalizeTimestamp('invalid'), 0, 'Invalid string should return 0');
+            assertEqual(HashUtils.normalizeTimestamp(''), 0, 'Empty string should return 0');
+            assertEqual(HashUtils.normalizeTimestamp(Infinity), 0, 'Infinity should return 0');
+            assertEqual(HashUtils.normalizeTimestamp(NaN), 0, 'NaN should return 0');
+        }
+
+        function testNormalizeTimestampVariousDateFormats() {
+            assert(HashUtils.normalizeTimestamp('2024-12-31') > 0, 'Date string should parse');
+            assert(HashUtils.normalizeTimestamp('Jan 1, 2024') > 0, 'Natural language date should parse');
+        }
+
+        // ============================
+        // PARSE UNIT LESSON TESTS
+        // ============================
+
+        function testParseUnitLessonBasic() {
+            assertDeepEqual(HashUtils.parseUnitLesson('U3-L7-Q09'), 
+                          { unitId: 'unit3', lessonId: 'U3-L7' }, 
+                          'Standard format parsing');
+            
+            assertDeepEqual(HashUtils.parseUnitLesson('U1-L2-Q01'),
+                          { unitId: 'unit1', lessonId: 'U1-L2' },
+                          'Single digit unit/lesson');
+        }
+
+        function testParseUnitLessonDoubleDigits() {
+            assertDeepEqual(HashUtils.parseUnitLesson('U10-L15-Q20'),
+                          { unitId: 'unit10', lessonId: 'U10-L15' },
+                          'Double digit parsing');
+        }
+
+        function testParseUnitLessonCaseInsensitive() {
+            assertDeepEqual(HashUtils.parseUnitLesson('u5-l8-q12'),
+                          { unitId: 'unit5', lessonId: 'U5-L8' },
+                          'Lowercase should work');
+        }
+
+        function testParseUnitLessonInvalid() {
+            assertEqual(HashUtils.parseUnitLesson('invalid'), null, 'Invalid format');
+            assertEqual(HashUtils.parseUnitLesson(''), null, 'Empty string');
+            assertEqual(HashUtils.parseUnitLesson('U1-Q01'), null, 'Missing lesson');
+            assertEqual(HashUtils.parseUnitLesson('L1-Q01'), null, 'Missing unit');
+            assertEqual(HashUtils.parseUnitLesson(null), null, 'Null input');
+            assertEqual(HashUtils.parseUnitLesson(undefined), null, 'Undefined input');
+            assertEqual(HashUtils.parseUnitLesson(123), null, 'Numeric input');
+        }
+
+        // ============================
+        // CANONICALIZE LESSON ANSWERS TESTS
+        // ============================
+
+        function testCanonicalizeLessonAnswersBasic() {
+            const answers = [
+                { username: 'alice', question_id: 'U1-L1-Q01', answer_value: 'A', timestamp: 1000 },
+                { username: 'bob', question_id: 'U1-L1-Q02', answer_value: 'B', timestamp: 2000 }
+            ];
+            const canonical = HashUtils.canonicalizeLessonAnswers(answers);
+            assert(typeof canonical === 'string', 'Should return string');
+            const parsed = JSON.parse(canonical);
+            assertEqual(parsed.length, 2, 'Should have 2 answers');
+            assertEqual(parsed[0].username, 'alice', 'First should be alice');
+        }
+
+        function testCanonicalizeLessonAnswersSorting() {
+            const answers = [
+                { username: 'bob', question_id: 'U1-L1-Q01', answer_value: 'A', timestamp: 1000 },
+                { username: 'alice', question_id: 'U1-L1-Q02', answer_value: 'B', timestamp: 2000 }
+            ];
+            const canonical = HashUtils.canonicalizeLessonAnswers(answers);
+            const parsed = JSON.parse(canonical);
+            assertEqual(parsed[0].username, 'alice', 'Should sort by username');
+            assertEqual(parsed[1].username, 'bob', 'Should sort by username');
+        }
+
+        function testCanonicalizeLessonAnswersTrimming() {
+            const answers = [
+                { username: '  alice  ', question_id: 'U1-L1-Q01', answer_value: 'A', timestamp: 1000 }
+            ];
+            const canonical = HashUtils.canonicalizeLessonAnswers(answers);
+            const parsed = JSON.parse(canonical);
+            assertEqual(parsed[0].username, 'alice', 'Should trim whitespace');
+        }
+
+        function testCanonicalizeLessonAnswersFiltering() {
+            const answers = [
+                { username: '', question_id: 'U1-L1-Q01', answer_value: 'A', timestamp: 1000 },
+                { username: 'alice', question_id: 'U1-L1-Q02', answer_value: 'B', timestamp: 2000 }
+            ];
+            const canonical = HashUtils.canonicalizeLessonAnswers(answers);
+            const parsed = JSON.parse(canonical);
+            assertEqual(parsed.length, 1, 'Should filter empty usernames');
+        }
+
+        function testCanonicalizeLessonAnswersEdgeCases() {
+            assertEqual(HashUtils.canonicalizeLessonAnswers([]), '[]', 'Empty array');
+            assertEqual(HashUtils.canonicalizeLessonAnswers(null), '[]', 'Null input');
+            assertEqual(HashUtils.canonicalizeLessonAnswers(undefined), '[]', 'Undefined input');
+        }
+
+        // ============================
+        // COMPUTE LESSON HASH TESTS
+        // ============================
+
+        function testComputeLessonHashDeterministic() {
+            const answers = [
+                { username: 'alice', question_id: 'U1-L1-Q01', answer_value: 'A', timestamp: 1000 }
+            ];
+            const hash1 = HashUtils.computeLessonHash(answers);
+            const hash2 = HashUtils.computeLessonHash(answers);
+            assertEqual(hash1, hash2, 'Lesson hash should be deterministic');
+        }
+
+        function testComputeLessonHashFormat() {
+            const answers = [
+                { username: 'alice', question_id: 'U1-L1-Q01', answer_value: 'A', timestamp: 1000 }
+            ];
+            const hash = HashUtils.computeLessonHash(answers);
+            assertEqual(typeof hash, 'string', 'Should return string');
+            assertEqual(hash.length, 32, 'Should be 32 characters');
+            assertMatch(hash, /^[0-9a-f]{32}$/, 'Should be hex format');
+        }
+
+        function testComputeLessonHashDifferentData() {
+            const answers1 = [
+                { username: 'alice', question_id: 'U1-L1-Q01', answer_value: 'A', timestamp: 1000 }
+            ];
+            const answers2 = [
+                { username: 'bob', question_id: 'U1-L1-Q01', answer_value: 'B', timestamp: 2000 }
+            ];
+            const hash1 = HashUtils.computeLessonHash(answers1);
+            const hash2 = HashUtils.computeLessonHash(answers2);
+            assert(hash1 \!== hash2, 'Different data should produce different hashes');
+        }
+
+        function testComputeLessonHashOrderIndependent() {
+            const answers1 = [
+                { username: 'alice', question_id: 'U1-L1-Q01', answer_value: 'A', timestamp: 1000 },
+                { username: 'bob', question_id: 'U1-L1-Q02', answer_value: 'B', timestamp: 2000 }
+            ];
+            const answers2 = [
+                { username: 'bob', question_id: 'U1-L1-Q02', answer_value: 'B', timestamp: 2000 },
+                { username: 'alice', question_id: 'U1-L1-Q01', answer_value: 'A', timestamp: 1000 }
+            ];
+            const hash1 = HashUtils.computeLessonHash(answers1);
+            const hash2 = HashUtils.computeLessonHash(answers2);
+            assertEqual(hash1, hash2, 'Order should not affect hash');
+        }
+
+        // ============================
+        // COMPUTE UNIT HASH TESTS
+        // ============================
+
+        function testComputeUnitHashFromLessons() {
+            const lessons = {
+                'U1-L1': { hash: 'abc123def456' },
+                'U1-L2': { hash: 'ghi789jkl012' }
+            };
+            const hash = HashUtils.computeUnitHashFromLessons(lessons);
+            assertEqual(typeof hash, 'string', 'Should return string');
+            assertEqual(hash.length, 32, 'Should be 32 characters');
+            assertMatch(hash, /^[0-9a-f]{32}$/, 'Should be hex format');
+        }
+
+        function testComputeUnitHashDeterministic() {
+            const lessons = {
+                'U1-L1': { hash: 'test1' },
+                'U1-L2': { hash: 'test2' }
+            };
+            const hash1 = HashUtils.computeUnitHashFromLessons(lessons);
+            const hash2 = HashUtils.computeUnitHashFromLessons(lessons);
+            assertEqual(hash1, hash2, 'Unit hash should be deterministic');
+        }
+
+        function testComputeUnitHashOrderIndependent() {
+            // Note: Object key order in JS is insertion order, but the function sorts them
+            const lessons1 = { 'U1-L2': { hash: 'second' }, 'U1-L1': { hash: 'first' } };
+            const lessons2 = { 'U1-L1': { hash: 'first' }, 'U1-L2': { hash: 'second' } };
+            const hash1 = HashUtils.computeUnitHashFromLessons(lessons1);
+            const hash2 = HashUtils.computeUnitHashFromLessons(lessons2);
+            assertEqual(hash1, hash2, 'Lesson order should not affect unit hash');
+        }
+
+        // ============================
+        // GATHER ALL LOCAL ANSWERS TESTS
+        // ============================
+
+        function testGatherAllLocalAnswersWithClassData() {
+            // Setup mock classData
+            window.classData = {
+                users: {
+                    'alice': {
+                        answers: {
+                            'U1-L1-Q01': { value: 'A', timestamp: 1000 }
+                        },
+                        timestamps: {
+                            'U1-L1-Q01': 1000
+                        }
+                    }
+                }
+            };
+
+            const answers = HashUtils.gatherAllLocalAnswers();
+            assert(Array.isArray(answers), 'Should return array');
+            assert(answers.length > 0, 'Should have answers from classData');
+            
+            const aliceAnswer = answers.find(a => a.username === 'alice');
+            assert(aliceAnswer \!== undefined, 'Should find alice answer');
+            assertEqual(aliceAnswer.question_id, 'U1-L1-Q01', 'Question ID');
+            assertEqual(aliceAnswer.answer_value, 'A', 'Answer value');
+            
+            // Cleanup
+            delete window.classData;
+        }
+
+        function testGatherAllLocalAnswersDeduplication() {
+            // Setup with duplicate (newer should win)
+            window.classData = {
+                users: {
+                    'alice': {
+                        answers: {
+                            'U1-L1-Q01': { value: 'A', timestamp: 1000 }
+                        },
+                        timestamps: {
+                            'U1-L1-Q01': 1000
+                        }
+                    }
+                }
+            };
+            
+            localStorage.setItem('answers_alice', JSON.stringify({
+                'U1-L1-Q01': { value: 'B', timestamp: 2000 }
+            }));
+
+            const answers = HashUtils.gatherAllLocalAnswers();
+            const aliceAnswers = answers.filter(a => a.username === 'alice' && a.question_id === 'U1-L1-Q01');
+            assertEqual(aliceAnswers.length, 1, 'Should deduplicate');
+            assertEqual(aliceAnswers[0].answer_value, 'B', 'Newer answer should win');
+            
+            // Cleanup
+            delete window.classData;
+            localStorage.removeItem('answers_alice');
+        }
+
+        // ============================
+        // BUILD LOCAL SYNC INDEX TESTS
+        // ============================
+
+        function testBuildLocalSyncIndexBasic() {
+            // Setup test data
+            window.classData = {
+                users: {
+                    'alice': {
+                        answers: {
+                            'U1-L1-Q01': { value: 'A', timestamp: 1000 }
+                        }
+                    },
+                    'bob': {
+                        answers: {
+                            'U1-L2-Q01': { value: 'B', timestamp: 2000 }
+                        }
+                    }
+                }
+            };
+
+            const index = HashUtils.buildLocalSyncIndex();
+            assert(index.units \!== undefined, 'Should have units');
+            assert(typeof index.units === 'object', 'Units should be object');
+            assert(index.units.unit1 \!== undefined, 'Should have unit1');
+            assert(index.units.unit1.lessons \!== undefined, 'Unit should have lessons');
+            
+            // Cleanup
+            delete window.classData;
+        }
+
+        function testBuildLocalSyncIndexEmpty() {
+            // No data
+            delete window.classData;
+            localStorage.clear();
+
+            const index = HashUtils.buildLocalSyncIndex();
+            assert(typeof index.units === 'object', 'Should return object even when empty');
+        }
+
+        // ============================
+        // RUN ALL TESTS
+        // ============================
+
+        function runAllTests() {
+            testResults = [];
+            totalTests = 0;
+            passedTests = 0;
+
+            console.log('🧪 Running Hash Utils Tests...\n');
+
+            // MD5 tests
+            runTest('MD5 Basic Functionality', testMD5BasicFunctionality);
+            runTest('MD5 Deterministic', testMD5Deterministic);
+            runTest('MD5 Different Inputs', testMD5DifferentInputs);
+            runTest('MD5 Known Values', testMD5KnownValues);
+            runTest('MD5 Special Characters', testMD5SpecialCharacters);
+            runTest('MD5 Long Strings', testMD5LongStrings);
+
+            // Normalize timestamp tests
+            runTest('Normalize Timestamp - Numeric', testNormalizeTimestampNumeric);
+            runTest('Normalize Timestamp - String', testNormalizeTimestampString);
+            runTest('Normalize Timestamp - ISO', testNormalizeTimestampISO);
+            runTest('Normalize Timestamp - Edge Cases', testNormalizeTimestampEdgeCases);
+            runTest('Normalize Timestamp - Date Formats', testNormalizeTimestampVariousDateFormats);
+
+            // Parse unit lesson tests
+            runTest('Parse Unit Lesson - Basic', testParseUnitLessonBasic);
+            runTest('Parse Unit Lesson - Double Digits', testParseUnitLessonDoubleDigits);
+            runTest('Parse Unit Lesson - Case Insensitive', testParseUnitLessonCaseInsensitive);
+            runTest('Parse Unit Lesson - Invalid', testParseUnitLessonInvalid);
+
+            // Canonicalize tests
+            runTest('Canonicalize - Basic', testCanonicalizeLessonAnswersBasic);
+            runTest('Canonicalize - Sorting', testCanonicalizeLessonAnswersSorting);
+            runTest('Canonicalize - Trimming', testCanonicalizeLessonAnswersTrimming);
+            runTest('Canonicalize - Filtering', testCanonicalizeLessonAnswersFiltering);
+            runTest('Canonicalize - Edge Cases', testCanonicalizeLessonAnswersEdgeCases);
+
+            // Lesson hash tests
+            runTest('Lesson Hash - Deterministic', testComputeLessonHashDeterministic);
+            runTest('Lesson Hash - Format', testComputeLessonHashFormat);
+            runTest('Lesson Hash - Different Data', testComputeLessonHashDifferentData);
+            runTest('Lesson Hash - Order Independent', testComputeLessonHashOrderIndependent);
+
+            // Unit hash tests
+            runTest('Unit Hash - Basic', testComputeUnitHashFromLessons);
+            runTest('Unit Hash - Deterministic', testComputeUnitHashDeterministic);
+            runTest('Unit Hash - Order Independent', testComputeUnitHashOrderIndependent);
+
+            // Integration tests
+            runTest('Gather Local Answers - ClassData', testGatherAllLocalAnswersWithClassData);
+            runTest('Gather Local Answers - Deduplication', testGatherAllLocalAnswersDeduplication);
+            runTest('Build Sync Index - Basic', testBuildLocalSyncIndexBasic);
+            runTest('Build Sync Index - Empty', testBuildLocalSyncIndexEmpty);
+
+            displayResults();
+        }
+
+        function displayResults() {
+            const resultsDiv = document.getElementById('results');
+            let html = '';
+
+            testResults.forEach(result => {
+                const cssClass = result.passed ? 'test-pass' : 'test-fail';
+                const icon = result.passed ? '✅' : '❌';
+                html += `<div class="test-result ${cssClass}">
+                    ${icon} ${result.name}
+                    ${result.error ? `<div class="error-details">${result.error}</div>` : ''}
+                </div>`;
+            });
+
+            const summaryClass = passedTests === totalTests ? 'success' : 'failure';
+            html += `<div class="summary ${summaryClass}">
+                Test Results: ${passedTests}/${totalTests} passed
+                ${passedTests === totalTests ? '🎉 All tests passed\!' : ''}
+            </div>`;
+
+            resultsDiv.innerHTML = html;
+        }
+
+        // Auto-run tests on page load
+        window.addEventListener('load', () => {
+            setTimeout(runAllTests, 100);
+        });
+    </script>
+</body>
+</html>

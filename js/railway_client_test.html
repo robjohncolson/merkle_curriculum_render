@@ -1,0 +1,545 @@
+<\!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Railway Client Test Suite</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+        h1 { color: #333; }
+        .test-result {
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 3px;
+        }
+        .test-pass {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .test-fail {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .summary {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #e9ecef;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .summary.success { background-color: #d4edda; }
+        .summary.failure { background-color: #f8d7da; }
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover { background-color: #0056b3; }
+        .error-details {
+            font-family: monospace;
+            font-size: 12px;
+            margin-top: 5px;
+            padding: 5px;
+            background-color: #f8f9fa;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧪 Railway Client Test Suite</h1>
+    <p><strong>Note:</strong> These tests run in isolation without actual server connection.</p>
+    <button onclick="runAllTests()">Run All Tests</button>
+    <div id="results"></div>
+
+    <script src="hash_utils.js"></script>
+    <script>
+        // Mock railway_client functions for testing
+        window.RAILWAY_SERVER_URL = 'http://localhost:3000';
+        window.USE_RAILWAY = false; // Don't actually connect during tests
+
+        let testResults = [];
+        let totalTests = 0;
+        let passedTests = 0;
+
+        function assert(condition, message) {
+            if (\!condition) throw new Error(message || 'Assertion failed');
+        }
+
+        function assertEqual(actual, expected, message) {
+            if (actual \!== expected) {
+                throw new Error(`${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+            }
+        }
+
+        function runTest(testName, testFn) {
+            totalTests++;
+            try {
+                testFn();
+                passedTests++;
+                testResults.push({ name: testName, passed: true });
+                console.log(`✅ ${testName} passed`);
+            } catch (error) {
+                testResults.push({ name: testName, passed: false, error: error.message });
+                console.error(`❌ ${testName} failed:`, error.message);
+            }
+        }
+
+        // Load railway_client inline for testing (core functions)
+        const manifestStorageKey = 'railway_manifest_cache_v1';
+
+        function safeJsonParse(value, fallback = null) {
+            try {
+                return value ? JSON.parse(value) : fallback;
+            } catch (error) {
+                console.warn('Failed to parse JSON payload from storage', error);
+                return fallback;
+            }
+        }
+
+        function loadStoredManifest() {
+            return safeJsonParse(localStorage.getItem(manifestStorageKey), { units: {} });
+        }
+
+        function saveStoredManifest(manifest) {
+            try {
+                localStorage.setItem(manifestStorageKey, JSON.stringify(manifest));
+            } catch (error) {
+                console.warn('Unable to store manifest cache', error);
+            }
+        }
+
+        function updateStoredManifestUnit(unitId, unitInfo = {}) {
+            const manifest = loadStoredManifest();
+            manifest.units = manifest.units || {};
+            manifest.units[unitId] = {
+                ...(manifest.units[unitId] || {}),
+                ...unitInfo,
+                lessons: {
+                    ...(manifest.units[unitId]?.lessons || {}),
+                    ...(unitInfo.lessons || {})
+                }
+            };
+            saveStoredManifest(manifest);
+        }
+
+        function updateStoredManifestLesson(unitId, lessonId, lessonInfo = {}) {
+            const manifest = loadStoredManifest();
+            manifest.units = manifest.units || {};
+            manifest.units[unitId] = manifest.units[unitId] || { lessons: {} };
+            manifest.units[unitId].lessons = manifest.units[unitId].lessons || {};
+            manifest.units[unitId].lessons[lessonId] = {
+                ...(manifest.units[unitId].lessons[lessonId] || {}),
+                ...lessonInfo
+            };
+            saveStoredManifest(manifest);
+        }
+
+        function normalizeDetail(detail) {
+            return {
+                username: (detail.username || '').trim(),
+                question_id: detail.question_id,
+                answer_value: detail.answer_value,
+                timestamp: HashUtils && typeof HashUtils.normalizeTimestamp === 'function'
+                    ? HashUtils.normalizeTimestamp(detail.timestamp)
+                    : parseInt(detail.timestamp, 10) || Date.now()
+            };
+        }
+
+        function buildPeerDataSnapshot() {
+            const answers = HashUtils && typeof HashUtils.gatherAllLocalAnswers === 'function'
+                ? HashUtils.gatherAllLocalAnswers()
+                : [];
+
+            const peerData = {};
+            answers.forEach((answer) => {
+                if (\!peerData[answer.username]) {
+                    peerData[answer.username] = { answers: {} };
+                }
+                peerData[answer.username].answers[answer.question_id] = {
+                    value: answer.answer_value,
+                    timestamp: answer.timestamp
+                };
+            });
+
+            return peerData;
+        }
+
+        // ============================
+        // SAFE JSON PARSE TESTS
+        // ============================
+
+        function testSafeJsonParseValid() {
+            const obj = { test: 'data' };
+            const json = JSON.stringify(obj);
+            const result = safeJsonParse(json);
+            assertEqual(result.test, 'data', 'Should parse valid JSON');
+        }
+
+        function testSafeJsonParseInvalid() {
+            const result = safeJsonParse('invalid json', { default: true });
+            assertEqual(result.default, true, 'Should return fallback on invalid JSON');
+        }
+
+        function testSafeJsonParseNull() {
+            const result = safeJsonParse(null, { empty: true });
+            assertEqual(result.empty, true, 'Should return fallback on null');
+        }
+
+        function testSafeJsonParseEmptyString() {
+            const result = safeJsonParse('', { empty: true });
+            assertEqual(result.empty, true, 'Should return fallback on empty string');
+        }
+
+        // ============================
+        // MANIFEST STORAGE TESTS
+        // ============================
+
+        function testLoadStoredManifestEmpty() {
+            localStorage.removeItem(manifestStorageKey);
+            const manifest = loadStoredManifest();
+            assert(manifest.units \!== undefined, 'Should have units object');
+            assertEqual(typeof manifest.units, 'object', 'Units should be object');
+        }
+
+        function testSaveAndLoadManifest() {
+            const testManifest = {
+                generatedAt: Date.now(),
+                units: {
+                    unit1: { hash: 'test123', lessonCount: 2 }
+                }
+            };
+            saveStoredManifest(testManifest);
+            const loaded = loadStoredManifest();
+            assertEqual(loaded.units.unit1.hash, 'test123', 'Should save and load manifest');
+            localStorage.removeItem(manifestStorageKey);
+        }
+
+        function testUpdateStoredManifestUnit() {
+            localStorage.removeItem(manifestStorageKey);
+            updateStoredManifestUnit('unit1', {
+                hash: 'abc123',
+                lessonCount: 3
+            });
+            const manifest = loadStoredManifest();
+            assertEqual(manifest.units.unit1.hash, 'abc123', 'Should update unit');
+            assertEqual(manifest.units.unit1.lessonCount, 3, 'Should have lesson count');
+            localStorage.removeItem(manifestStorageKey);
+        }
+
+        function testUpdateStoredManifestLesson() {
+            localStorage.removeItem(manifestStorageKey);
+            updateStoredManifestLesson('unit1', 'U1-L1', {
+                hash: 'lesson123',
+                answerCount: 5
+            });
+            const manifest = loadStoredManifest();
+            assertEqual(manifest.units.unit1.lessons['U1-L1'].hash, 'lesson123', 'Should update lesson');
+            localStorage.removeItem(manifestStorageKey);
+        }
+
+        function testUpdateStoredManifestUnitPreservesLessons() {
+            localStorage.removeItem(manifestStorageKey);
+            updateStoredManifestLesson('unit1', 'U1-L1', { hash: 'lesson1' });
+            updateStoredManifestUnit('unit1', { hash: 'newunit' });
+            const manifest = loadStoredManifest();
+            assertEqual(manifest.units.unit1.lessons['U1-L1'].hash, 'lesson1', 'Should preserve existing lessons');
+            localStorage.removeItem(manifestStorageKey);
+        }
+
+        // ============================
+        // NORMALIZE DETAIL TESTS
+        // ============================
+
+        function testNormalizeDetailBasic() {
+            const detail = {
+                username: 'alice',
+                question_id: 'U1-L1-Q01',
+                answer_value: 'A',
+                timestamp: 1000
+            };
+            const normalized = normalizeDetail(detail);
+            assertEqual(normalized.username, 'alice', 'Username should match');
+            assertEqual(normalized.question_id, 'U1-L1-Q01', 'Question ID should match');
+            assertEqual(normalized.answer_value, 'A', 'Answer value should match');
+            assertEqual(normalized.timestamp, 1000, 'Timestamp should be normalized');
+        }
+
+        function testNormalizeDetailTrimUsername() {
+            const detail = {
+                username: '  alice  ',
+                question_id: 'U1-L1-Q01',
+                answer_value: 'A',
+                timestamp: 1000
+            };
+            const normalized = normalizeDetail(detail);
+            assertEqual(normalized.username, 'alice', 'Should trim username');
+        }
+
+        function testNormalizeDetailEmptyUsername() {
+            const detail = {
+                username: '',
+                question_id: 'U1-L1-Q01',
+                answer_value: 'A',
+                timestamp: 1000
+            };
+            const normalized = normalizeDetail(detail);
+            assertEqual(normalized.username, '', 'Empty username should remain empty');
+        }
+
+        function testNormalizeDetailStringTimestamp() {
+            const detail = {
+                username: 'alice',
+                question_id: 'U1-L1-Q01',
+                answer_value: 'A',
+                timestamp: '5000'
+            };
+            const normalized = normalizeDetail(detail);
+            assertEqual(normalized.timestamp, 5000, 'String timestamp should be normalized');
+        }
+
+        function testNormalizeDetailMissingTimestamp() {
+            const detail = {
+                username: 'alice',
+                question_id: 'U1-L1-Q01',
+                answer_value: 'A'
+            };
+            const normalized = normalizeDetail(detail);
+            assert(typeof normalized.timestamp === 'number', 'Missing timestamp should default to number');
+            assert(normalized.timestamp > 0, 'Default timestamp should be positive');
+        }
+
+        // ============================
+        // BUILD PEER DATA SNAPSHOT TESTS
+        // ============================
+
+        function testBuildPeerDataSnapshotWithData() {
+            window.classData = {
+                users: {
+                    alice: {
+                        answers: {
+                            'U1-L1-Q01': { value: 'A', timestamp: 1000 }
+                        }
+                    }
+                }
+            };
+
+            const snapshot = buildPeerDataSnapshot();
+            assert(snapshot.alice \!== undefined, 'Should have alice data');
+            assertEqual(snapshot.alice.answers['U1-L1-Q01'].value, 'A', 'Should have answer value');
+            
+            delete window.classData;
+        }
+
+        function testBuildPeerDataSnapshotEmpty() {
+            delete window.classData;
+            localStorage.clear();
+
+            const snapshot = buildPeerDataSnapshot();
+            assertEqual(typeof snapshot, 'object', 'Should return object');
+        }
+
+        function testBuildPeerDataSnapshotMultipleUsers() {
+            window.classData = {
+                users: {
+                    alice: {
+                        answers: {
+                            'U1-L1-Q01': { value: 'A', timestamp: 1000 }
+                        }
+                    },
+                    bob: {
+                        answers: {
+                            'U1-L1-Q02': { value: 'B', timestamp: 2000 }
+                        }
+                    }
+                }
+            };
+
+            const snapshot = buildPeerDataSnapshot();
+            assert(snapshot.alice \!== undefined, 'Should have alice');
+            assert(snapshot.bob \!== undefined, 'Should have bob');
+            
+            delete window.classData;
+        }
+
+        // ============================
+        // MANIFEST OPERATIONS TESTS
+        // ============================
+
+        function testManifestMultipleUnits() {
+            localStorage.removeItem(manifestStorageKey);
+            
+            updateStoredManifestUnit('unit1', { hash: 'hash1', lessonCount: 2 });
+            updateStoredManifestUnit('unit2', { hash: 'hash2', lessonCount: 3 });
+            
+            const manifest = loadStoredManifest();
+            assert(manifest.units.unit1 \!== undefined, 'Should have unit1');
+            assert(manifest.units.unit2 \!== undefined, 'Should have unit2');
+            assertEqual(manifest.units.unit1.hash, 'hash1', 'Unit1 hash');
+            assertEqual(manifest.units.unit2.hash, 'hash2', 'Unit2 hash');
+            
+            localStorage.removeItem(manifestStorageKey);
+        }
+
+        function testManifestMultipleLessons() {
+            localStorage.removeItem(manifestStorageKey);
+            
+            updateStoredManifestLesson('unit1', 'U1-L1', { hash: 'lesson1', answerCount: 5 });
+            updateStoredManifestLesson('unit1', 'U1-L2', { hash: 'lesson2', answerCount: 3 });
+            
+            const manifest = loadStoredManifest();
+            assertEqual(manifest.units.unit1.lessons['U1-L1'].hash, 'lesson1', 'Lesson1 hash');
+            assertEqual(manifest.units.unit1.lessons['U1-L2'].hash, 'lesson2', 'Lesson2 hash');
+            
+            localStorage.removeItem(manifestStorageKey);
+        }
+
+        function testManifestOverwriteUnit() {
+            localStorage.removeItem(manifestStorageKey);
+            
+            updateStoredManifestUnit('unit1', { hash: 'old', lessonCount: 2 });
+            updateStoredManifestUnit('unit1', { hash: 'new', lessonCount: 4 });
+            
+            const manifest = loadStoredManifest();
+            assertEqual(manifest.units.unit1.hash, 'new', 'Should overwrite hash');
+            assertEqual(manifest.units.unit1.lessonCount, 4, 'Should overwrite count');
+            
+            localStorage.removeItem(manifestStorageKey);
+        }
+
+        function testManifestOverwriteLesson() {
+            localStorage.removeItem(manifestStorageKey);
+            
+            updateStoredManifestLesson('unit1', 'U1-L1', { hash: 'old', answerCount: 5 });
+            updateStoredManifestLesson('unit1', 'U1-L1', { hash: 'new', answerCount: 10 });
+            
+            const manifest = loadStoredManifest();
+            assertEqual(manifest.units.unit1.lessons['U1-L1'].hash, 'new', 'Should overwrite lesson hash');
+            assertEqual(manifest.units.unit1.lessons['U1-L1'].answerCount, 10, 'Should overwrite count');
+            
+            localStorage.removeItem(manifestStorageKey);
+        }
+
+        // ============================
+        // EDGE CASES AND ERROR HANDLING
+        // ============================
+
+        function testManifestCorruptedData() {
+            localStorage.setItem(manifestStorageKey, 'corrupted json{');
+            const manifest = loadStoredManifest();
+            assertEqual(typeof manifest.units, 'object', 'Should return default on corruption');
+            localStorage.removeItem(manifestStorageKey);
+        }
+
+        function testManifestLargeData() {
+            localStorage.removeItem(manifestStorageKey);
+            
+            // Add many units
+            for (let i = 1; i <= 10; i++) {
+                updateStoredManifestUnit(`unit${i}`, { hash: `hash${i}`, lessonCount: i });
+            }
+            
+            const manifest = loadStoredManifest();
+            assertEqual(Object.keys(manifest.units).length, 10, 'Should handle many units');
+            
+            localStorage.removeItem(manifestStorageKey);
+        }
+
+        function testNormalizeDetailNullValues() {
+            const detail = {
+                username: null,
+                question_id: 'U1-L1-Q01',
+                answer_value: null,
+                timestamp: null
+            };
+            const normalized = normalizeDetail(detail);
+            assertEqual(normalized.username, '', 'Null username should become empty');
+            assertEqual(normalized.answer_value, null, 'Null answer value should stay null');
+        }
+
+        // ============================
+        // RUN ALL TESTS
+        // ============================
+
+        function runAllTests() {
+            testResults = [];
+            totalTests = 0;
+            passedTests = 0;
+
+            console.log('🧪 Running Railway Client Tests...\n');
+
+            // Safe JSON Parse tests
+            runTest('Safe JSON Parse - Valid', testSafeJsonParseValid);
+            runTest('Safe JSON Parse - Invalid', testSafeJsonParseInvalid);
+            runTest('Safe JSON Parse - Null', testSafeJsonParseNull);
+            runTest('Safe JSON Parse - Empty String', testSafeJsonParseEmptyString);
+
+            // Manifest storage tests
+            runTest('Load Stored Manifest - Empty', testLoadStoredManifestEmpty);
+            runTest('Save and Load Manifest', testSaveAndLoadManifest);
+            runTest('Update Stored Manifest Unit', testUpdateStoredManifestUnit);
+            runTest('Update Stored Manifest Lesson', testUpdateStoredManifestLesson);
+            runTest('Update Unit Preserves Lessons', testUpdateStoredManifestUnitPreservesLessons);
+
+            // Normalize detail tests
+            runTest('Normalize Detail - Basic', testNormalizeDetailBasic);
+            runTest('Normalize Detail - Trim Username', testNormalizeDetailTrimUsername);
+            runTest('Normalize Detail - Empty Username', testNormalizeDetailEmptyUsername);
+            runTest('Normalize Detail - String Timestamp', testNormalizeDetailStringTimestamp);
+            runTest('Normalize Detail - Missing Timestamp', testNormalizeDetailMissingTimestamp);
+            runTest('Normalize Detail - Null Values', testNormalizeDetailNullValues);
+
+            // Build peer data snapshot tests
+            runTest('Build Peer Data Snapshot - With Data', testBuildPeerDataSnapshotWithData);
+            runTest('Build Peer Data Snapshot - Empty', testBuildPeerDataSnapshotEmpty);
+            runTest('Build Peer Data Snapshot - Multiple Users', testBuildPeerDataSnapshotMultipleUsers);
+
+            // Manifest operations tests
+            runTest('Manifest - Multiple Units', testManifestMultipleUnits);
+            runTest('Manifest - Multiple Lessons', testManifestMultipleLessons);
+            runTest('Manifest - Overwrite Unit', testManifestOverwriteUnit);
+            runTest('Manifest - Overwrite Lesson', testManifestOverwriteLesson);
+
+            // Edge cases
+            runTest('Manifest - Corrupted Data', testManifestCorruptedData);
+            runTest('Manifest - Large Data', testManifestLargeData);
+
+            displayResults();
+        }
+
+        function displayResults() {
+            const resultsDiv = document.getElementById('results');
+            let html = '';
+
+            testResults.forEach(result => {
+                const cssClass = result.passed ? 'test-pass' : 'test-fail';
+                const icon = result.passed ? '✅' : '❌';
+                html += `<div class="test-result ${cssClass}">
+                    ${icon} ${result.name}
+                    ${result.error ? `<div class="error-details">${result.error}</div>` : ''}
+                </div>`;
+            });
+
+            const summaryClass = passedTests === totalTests ? 'success' : 'failure';
+            html += `<div class="summary ${summaryClass}">
+                Test Results: ${passedTests}/${totalTests} passed
+                ${passedTests === totalTests ? '🎉 All tests passed\!' : ''}
+            </div>`;
+
+            resultsDiv.innerHTML = html;
+        }
+
+        // Auto-run tests on page load
+        window.addEventListener('load', () => {
+            setTimeout(runAllTests, 100);
+        });
+    </script>
+</body>
+</html>
