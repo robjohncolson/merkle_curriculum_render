@@ -2,8 +2,360 @@
   // This replaces direct Supabase calls with Railway server calls
 
   // Configuration
-  const RAILWAY_SERVER_URL = window.RAILWAY_SERVER_URL || 'https://your-app.up.railway.app';
+  const rawRailwayServerUrl = window.RAILWAY_SERVER_URL || 'https://your-app.up.railway.app';
+  const RAILWAY_SERVER_URL = (rawRailwayServerUrl || '')
+      .trim()
+      .replace(/\/+$/, '');
   const USE_RAILWAY = window.USE_RAILWAY || false;
+
+  const HashUtils = window.HashUtils || {};
+  const manifestStorageKey = 'railway_manifest_cache_v1';
+
+  let lastSyncSummary = null;
+
+  function buildRailwayUrl(path = '') {
+      if (!RAILWAY_SERVER_URL) {
+          return path;
+      }
+
+      const normalizedPath = `${path || ''}`
+          .trim()
+          .replace(/^\/+/, '');
+
+      if (!normalizedPath) {
+          return RAILWAY_SERVER_URL;
+      }
+
+      return `${RAILWAY_SERVER_URL}/${normalizedPath}`;
+  }
+
+  function buildWebSocketUrl(path = '') {
+      const httpUrl = buildRailwayUrl(path);
+      if (!httpUrl) return httpUrl;
+      return httpUrl
+          .replace(/^https:\/\//i, 'wss://')
+          .replace(/^http:\/\//i, 'ws://');
+  }
+
+  function safeJsonParse(value, fallback = null) {
+      try {
+          return value ? JSON.parse(value) : fallback;
+      } catch (error) {
+          console.warn('Failed to parse JSON payload from storage', error);
+          return fallback;
+      }
+  }
+
+  function loadStoredManifest() {
+      return safeJsonParse(localStorage.getItem(manifestStorageKey), { units: {} });
+  }
+
+  function saveStoredManifest(manifest) {
+      try {
+          localStorage.setItem(manifestStorageKey, JSON.stringify(manifest));
+      } catch (error) {
+          console.warn('Unable to store manifest cache', error);
+      }
+  }
+
+  function updateStoredManifestUnit(unitId, unitInfo = {}) {
+      const manifest = loadStoredManifest();
+      manifest.units = manifest.units || {};
+      manifest.units[unitId] = {
+          ...(manifest.units[unitId] || {}),
+          ...unitInfo,
+          lessons: {
+              ...(manifest.units[unitId]?.lessons || {}),
+              ...(unitInfo.lessons || {})
+          }
+      };
+      saveStoredManifest(manifest);
+  }
+
+  function updateStoredManifestLesson(unitId, lessonId, lessonInfo = {}) {
+      const manifest = loadStoredManifest();
+      manifest.units = manifest.units || {};
+      manifest.units[unitId] = manifest.units[unitId] || { lessons: {} };
+      manifest.units[unitId].lessons = manifest.units[unitId].lessons || {};
+      manifest.units[unitId].lessons[lessonId] = {
+          ...(manifest.units[unitId].lessons[lessonId] || {}),
+          ...lessonInfo
+      };
+      saveStoredManifest(manifest);
+  }
+
+  async function fetchJson(url, options = {}) {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`Request failed (${response.status}): ${text}`);
+      }
+      return response.json();
+  }
+
+  function computeLocalSyncIndex() {
+      if (HashUtils && typeof HashUtils.buildLocalSyncIndex === 'function') {
+          return HashUtils.buildLocalSyncIndex();
+      }
+      return { units: {} };
+  }
+
+  function buildPeerDataSnapshot() {
+      const answers = HashUtils && typeof HashUtils.gatherAllLocalAnswers === 'function'
+          ? HashUtils.gatherAllLocalAnswers()
+          : [];
+
+      const peerData = {};
+      answers.forEach((answer) => {
+          if (!peerData[answer.username]) {
+              peerData[answer.username] = { answers: {} };
+          }
+          peerData[answer.username].answers[answer.question_id] = {
+              value: answer.answer_value,
+              timestamp: answer.timestamp
+          };
+      });
+
+      return peerData;
+  }
+
+  function normalizeDetail(detail) {
+      return {
+          username: (detail.username || '').trim(),
+          question_id: detail.question_id,
+          answer_value: detail.answer_value,
+          timestamp: HashUtils && typeof HashUtils.normalizeTimestamp === 'function'
+              ? HashUtils.normalizeTimestamp(detail.timestamp)
+              : parseInt(detail.timestamp, 10) || Date.now()
+      };
+  }
+
+  function applyLessonAnswer(detail) {
+      const normalized = normalizeDetail(detail);
+      if (!normalized.username || !normalized.question_id) return false;
+
+      if (typeof window.ensureClassDataInitialized === 'function') {
+          window.ensureClassDataInitialized();
+      }
+
+      if (typeof window.mergePeerAnswer !== 'function') {
+          console.warn('mergePeerAnswer is not available - skipping local merge');
+          return false;
+      }
+
+      const updated = window.mergePeerAnswer(normalized);
+      if (!updated) {
+          return false;
+      }
+
+      try {
+          if (window.spriteManager && typeof window.checkIfAnswerCorrect === 'function') {
+              const isCorrect = window.checkIfAnswerCorrect(normalized.question_id, normalized.answer_value);
+              window.spriteManager.handlePeerAnswer(normalized.username, isCorrect);
+          }
+      } catch (error) {
+          console.warn('Sprite update failed after lesson sync', error);
+      }
+
+      if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => {
+              try {
+                  if (typeof window.refreshQuestionIfVisible === 'function') {
+                      window.refreshQuestionIfVisible(normalized.question_id);
+                  }
+                  if (typeof window.updatePeerDataTimestamp === 'function') {
+                      window.updatePeerDataTimestamp();
+                  }
+              } catch (error) {
+                  console.warn('UI refresh failed after lesson sync', error);
+              }
+          });
+      }
+
+      return true;
+  }
+
+  function ingestLessonAnswers(lessonId, answers = []) {
+      let applied = 0;
+      answers.forEach((answer) => {
+          const detail = {
+              username: answer.username,
+              question_id: answer.question_id,
+              answer_value: answer.answer_value,
+              timestamp: answer.timestamp
+          };
+          if (applyLessonAnswer(detail)) {
+              applied += 1;
+          }
+      });
+      return applied;
+  }
+
+  function clearLocalLessonData(lessonId) {
+      if (!lessonId) return 0;
+      if (typeof window.ensureClassDataInitialized === 'function') {
+          window.ensureClassDataInitialized();
+      }
+
+      let removed = 0;
+      const prefix = `${lessonId}-`;
+
+      if (window.classData && window.classData.users) {
+          Object.entries(window.classData.users).forEach(([username, data]) => {
+              const answers = data.answers || {};
+              const timestamps = data.timestamps || {};
+              Object.keys(answers).forEach((questionId) => {
+                  if (questionId.startsWith(prefix)) {
+                      delete answers[questionId];
+                      delete timestamps[questionId];
+                      removed += 1;
+                  }
+              });
+          });
+          if (removed > 0 && typeof window.saveClassData === 'function') {
+              window.saveClassData();
+          }
+      }
+
+      Object.keys(localStorage)
+          .filter((key) => key.startsWith('answers_'))
+          .forEach((key) => {
+              const stored = safeJsonParse(localStorage.getItem(key), {});
+              let modified = false;
+              Object.keys(stored).forEach((questionId) => {
+                  if (questionId.startsWith(prefix)) {
+                      delete stored[questionId];
+                      modified = true;
+                  }
+              });
+              if (modified) {
+                  localStorage.setItem(key, JSON.stringify(stored));
+              }
+          });
+
+      return removed;
+  }
+
+  async function performMerkleSync() {
+      if (!USE_RAILWAY) return null;
+
+      try {
+          const manifest = await fetchJson(buildRailwayUrl('/api/sync/manifest'));
+          saveStoredManifest({
+              generatedAt: manifest.generatedAt,
+              units: manifest.units || {}
+          });
+
+          const serverUnits = manifest.units || {};
+          const localIndex = computeLocalSyncIndex();
+          const localUnits = localIndex.units || {};
+
+          const unitsNeedingDetail = [];
+          Object.keys(serverUnits).forEach((unitId) => {
+              const serverUnit = serverUnits[unitId];
+              const localUnit = localUnits[unitId];
+              if (!localUnit || localUnit.hash !== serverUnit.hash) {
+                  unitsNeedingDetail.push(unitId);
+              }
+          });
+
+          // Remove local units that no longer exist on the server
+          Object.keys(localUnits).forEach((unitId) => {
+              if (!serverUnits[unitId]) {
+                  const lessons = localUnits[unitId]?.lessons || {};
+                  Object.keys(lessons).forEach((lessonId) => {
+                      clearLocalLessonData(lessonId);
+                  });
+              }
+          });
+
+          let lessonsFetched = 0;
+          let answersApplied = 0;
+
+          for (const unitId of unitsNeedingDetail) {
+              const unitManifest = await fetchJson(buildRailwayUrl(`/api/sync/unit/${unitId}`));
+              const serverLessons = unitManifest.lessons || {};
+              const localLessons = localUnits[unitId]?.lessons || {};
+
+              // Remove lessons that no longer exist on the server
+              Object.keys(localLessons).forEach((lessonId) => {
+                  if (!serverLessons[lessonId]) {
+                      clearLocalLessonData(lessonId);
+                  }
+              });
+
+              updateStoredManifestUnit(unitId, {
+                  hash: unitManifest.hash,
+                  lessonCount: unitManifest.lessonCount,
+                  lessons: serverLessons
+              });
+
+              for (const [lessonId, lessonInfo] of Object.entries(serverLessons)) {
+                  const localLesson = localLessons[lessonId];
+                  if (localLesson && localLesson.hash === lessonInfo.hash) {
+                      continue; // already in sync
+                  }
+
+                  const lessonPayload = await fetchJson(buildRailwayUrl(`/api/data/lesson/${lessonId}`));
+                  lessonsFetched += 1;
+                  const applied = ingestLessonAnswers(lessonId, lessonPayload.answers || []);
+                  answersApplied += applied;
+
+                  updateStoredManifestLesson(unitId, lessonId, {
+                      hash: lessonPayload.hash,
+                      answerCount: lessonPayload.answerCount,
+                      updatedAt: lessonPayload.updatedAt
+                  });
+              }
+          }
+
+          lastSyncSummary = {
+              generatedAt: manifest.generatedAt,
+              unitCount: Object.keys(serverUnits).length,
+              unitsUpdated: unitsNeedingDetail.length,
+              lessonsFetched,
+              answersApplied
+          };
+
+          if (lessonsFetched === 0) {
+              console.log('✅ Merkle sync: local data already matches server manifest.');
+          } else {
+              console.log(`✅ Merkle sync: updated ${lessonsFetched} lessons with ${answersApplied} answers.`);
+          }
+
+          return lastSyncSummary;
+      } catch (error) {
+          console.error('Merkle sync failed:', error);
+          throw error;
+      }
+  }
+
+  function updateBroadcastManifest(data) {
+      if (!data || !data.unitId) return;
+      const lessons = {};
+      if (Array.isArray(data.lessons)) {
+          data.lessons.forEach((lesson) => {
+              if (lesson?.lessonId) {
+                  lessons[lesson.lessonId] = {
+                      hash: lesson.hash,
+                      answerCount: lesson.answerCount,
+                      updatedAt: Date.now()
+                  };
+              }
+          });
+      } else if (data.lessonId) {
+          lessons[data.lessonId] = {
+              hash: data.lessonHash,
+              answerCount: data.lessonAnswerCount,
+              updatedAt: Date.now()
+          };
+      }
+
+      updateStoredManifestUnit(data.unitId, {
+          hash: data.unitHash,
+          lessons
+      });
+  }
 
   // WebSocket connection
   let ws = null;
@@ -21,11 +373,21 @@
       console.log('🚂 Initializing Railway server connection...');
 
       // Test REST API connection
-      fetch(`${RAILWAY_SERVER_URL}/health`)
-          .then(res => res.json())
+      fetch(buildRailwayUrl('/health'))
+          .then(res => {
+              if (!res.ok) {
+                  return res.text().then(text => {
+                      throw new Error(`Health check failed (${res.status}): ${text}`);
+                  });
+              }
+              return res.json();
+          })
           .then(data => {
               console.log('✅ Railway server connected:', data);
               connectWebSocket();
+              performMerkleSync().catch(error => {
+                  console.warn('Initial Merkle sync failed after health check:', error);
+              });
           })
           .catch(error => {
               console.error('❌ Railway server unavailable:', error);
@@ -39,7 +401,7 @@
   function connectWebSocket() {
       if (!USE_RAILWAY) return;
 
-      const wsUrl = RAILWAY_SERVER_URL.replace('https://', 'wss://').replace('http://', 'ws://');
+      const wsUrl = buildWebSocketUrl();
 
       try {
           ws = new WebSocket(wsUrl);
@@ -167,6 +529,7 @@
                   console.error('[WebSocket] Invalid or incomplete answer_submitted data received:', data);
                   break;
               }
+              updateBroadcastManifest(data);
               console.log(`📨 Received answer for ${data.question_id}, dispatching 'peer:answer' event.`);
               window.dispatchEvent(new CustomEvent('peer:answer', {
                   detail: {
@@ -180,6 +543,9 @@
 
           case 'batch_submitted':
               console.log(`📦 Batch update: ${data.count} answers`);
+              if (Array.isArray(data.units)) {
+                  data.units.forEach((unit) => updateBroadcastManifest(unit));
+              }
               // Pull latest data from server
               pullPeerDataFromRailway();
               break;
@@ -206,7 +572,7 @@
       }
 
       try {
-          const response = await fetch(`${RAILWAY_SERVER_URL}/api/submit-answer`, {
+          const response = await fetch(buildRailwayUrl('/api/submit-answer'), {
               method: 'POST',
               headers: {
                   'Content-Type': 'application/json'
@@ -235,57 +601,21 @@
   }
 
   // Pull peer data from Railway server
-  async function pullPeerDataFromRailway(since = 0) {
+  async function pullPeerDataFromRailway() {
       if (!USE_RAILWAY) {
           // Fall back to direct Supabase
           return pullPeerDataFromSupabase();
       }
 
       try {
-          const url = since > 0
-              ? `${RAILWAY_SERVER_URL}/api/peer-data?since=${since}`
-              : `${RAILWAY_SERVER_URL}/api/peer-data`;
-
-          const response = await fetch(url);
-          const result = await response.json();
-
-          console.log(`📥 Pulled ${result.filtered} answers from Railway (${result.cached ? 'cached' : 'fresh'})`);
-
-          // Convert to local storage format
-          const peerData = {};
-          result.data.forEach(answer => {
-              if (!peerData[answer.username]) {
-                  peerData[answer.username] = { answers: {} };
-              }
-              peerData[answer.username].answers[answer.question_id] = {
-                  value: answer.answer_value,
-                  timestamp: answer.timestamp
-              };
-          });
-
-          // Update local storage
-          const currentUser = localStorage.getItem('consensusUsername');
-          for (const [username, userData] of Object.entries(peerData)) {
-              if (username !== currentUser) {
-                  const key = `answers_${username}`;
-                  const existing = JSON.parse(localStorage.getItem(key) || '{}');
-
-                  // Merge with existing data
-                  Object.assign(existing, userData.answers);
-                  localStorage.setItem(key, JSON.stringify(existing));
-              }
+          const summary = await performMerkleSync();
+          if (summary) {
+              console.log('Merkle sync summary:', summary);
           }
-
-          // Update timestamp display
-          if (typeof updatePeerDataTimestamp === 'function') {
-              updatePeerDataTimestamp();
-          }
-
-          return peerData;
-
+          return buildPeerDataSnapshot();
       } catch (error) {
-          console.error('Railway pull failed:', error);
-          // Fall back to direct Supabase
+          console.error('Railway Merkle sync failed:', error);
+          // Fall back to direct Supabase for resilience
           return pullPeerDataFromSupabase();
       }
   }
@@ -295,7 +625,7 @@
       if (!USE_RAILWAY) return null;
 
       try {
-          const response = await fetch(`${RAILWAY_SERVER_URL}/api/question-stats/${questionId}`);
+          const response = await fetch(buildRailwayUrl(`/api/question-stats/${questionId}`));
           const stats = await response.json();
 
           console.log(`📊 Stats for ${questionId}:`, stats);
@@ -315,7 +645,7 @@
       }
 
       try {
-          const response = await fetch(`${RAILWAY_SERVER_URL}/api/batch-submit`, {
+          const response = await fetch(buildRailwayUrl('/api/batch-submit'), {
               method: 'POST',
               headers: {
                   'Content-Type': 'application/json'
@@ -370,7 +700,8 @@
       pullPeerData: pullPeerDataFromRailway,
       getStats: getQuestionStats,
       batchSubmit: batchSubmitViaRailway,
-      isConnected: () => wsConnected
+      isConnected: () => wsConnected,
+      getLastSyncSummary: () => lastSyncSummary
   };
 
   console.log('🚂 Railway client loaded. Set USE_RAILWAY=true to enable.');
