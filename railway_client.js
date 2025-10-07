@@ -387,12 +387,21 @@
 
       // Test REST API connection
       fetch(buildRailwayUrl('/health'))
-          .then(res => {
+          .then(async res => {
               if (!res.ok) {
-                  return res.text().then(text => {
-                      throw new Error(`Health check failed (${res.status}): ${text}`);
-                  });
+                  const bodyText = await res.text();
+                  const snippet = bodyText ? bodyText.trim().replace(/\s+/g, ' ').slice(0, 200) : '<empty body>';
+                  throw new Error(`Health check failed (status ${res.status}): ${snippet}`);
               }
+
+              const contentType = res.headers.get('content-type') || '';
+              if (!contentType.toLowerCase().includes('application/json')) {
+                  const bodyText = await res.text();
+                  const snippet = bodyText ? bodyText.trim().replace(/\s+/g, ' ').slice(0, 200) : '<empty body>';
+                  const typeLabel = contentType || 'unknown';
+                  throw new Error(`Health check returned non-JSON response (status ${res.status}, content-type ${typeLabel}): ${snippet}`);
+              }
+
               return res.json();
           })
           .then(data => {
