@@ -1,6 +1,7 @@
 // Railway Server Integration for AP Stats Turbo Mode
-  // This replaces direct Supabase calls with Railway server calls
+// This replaces direct Supabase calls with Railway server calls
 
+;(function () {
   // Configuration
   const rawRailwayServerUrl = window.RAILWAY_SERVER_URL;
   const RAILWAY_SERVER_URL = (() => {
@@ -731,3 +732,4 @@
   };
 
   console.log('🚂 Railway client loaded. Set USE_RAILWAY=true to enable.');
+})();
