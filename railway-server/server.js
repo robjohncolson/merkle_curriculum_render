@@ -94,10 +94,7 @@ async function rebuildFullSyncCache() {
 }
 
 function isSyncCacheFresh() {
-  if (!syncCache.lastBuilt) {
-    return false;
-  }
-  return (Date.now() - syncCache.lastBuilt) < syncCache.ttl;
+  return syncCache.units.size > 0 && (Date.now() - syncCache.lastBuilt) < syncCache.ttl;
 }
 
 async function ensureSyncCache(force = false) {

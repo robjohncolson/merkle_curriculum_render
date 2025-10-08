@@ -6,16 +6,13 @@ function normalizeTimestamp(value) {
     return Math.trunc(value);
   }
   if (typeof value === 'string') {
-    if (/^\d+$/.test(value)) {
-      const numeric = parseInt(value, 10);
-      if (!Number.isNaN(numeric)) {
-        return numeric;
-      }
-    } else {
-      const ms = Date.parse(value);
-      if (!Number.isNaN(ms)) {
-        return Math.trunc(ms);
-      }
+    const numeric = parseInt(value, 10);
+    if (!Number.isNaN(numeric)) {
+      return numeric;
+    }
+    const ms = Date.parse(value);
+    if (!Number.isNaN(ms)) {
+      return Math.trunc(ms);
     }
   }
   return 0;
