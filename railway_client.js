@@ -3,7 +3,7 @@
 
 ;(function () {
   // Configuration
-  const DEFAULT_RAILWAY_URL = 'https://your-app.up.railway.app';
+  const DEFAULT_RAILWAY_URL = 'https://merklecurriculumrender-production.up.railway.app';
   const rawRailwayServerUrl =
       typeof window.RAILWAY_SERVER_URL === 'string'
           ? window.RAILWAY_SERVER_URL.trim()
@@ -247,7 +247,6 @@
 
       try {
           const manifest = await fetchJson(buildRailwayUrl('/api/sync/manifest'));
-          const manifest = await fetchJson(`${RAILWAY_SERVER_URL}/api/sync/manifest`);
           saveStoredManifest({
               generatedAt: manifest.generatedAt,
               units: manifest.units || {}
@@ -281,7 +280,6 @@
 
           for (const unitId of unitsNeedingDetail) {
               const unitManifest = await fetchJson(buildRailwayUrl(`/api/sync/unit/${unitId}`));
-              const unitManifest = await fetchJson(`${RAILWAY_SERVER_URL}/api/sync/unit/${unitId}`);
               const serverLessons = unitManifest.lessons || {};
               const localLessons = localUnits[unitId]?.lessons || {};
 
@@ -443,18 +441,15 @@
               if (wsPingInterval) clearInterval(wsPingInterval);
               wsPingInterval = setInterval(() => {
                   if (ws.readyState === WebSocket.OPEN) {
-              const username = knownUsername || (window.currentUsername || localStorage.getItem('consensusUsername') || '').trim();
-              // Regular ping for latency
-              ws.send(JSON.stringify({ type: 'ping' }));
-              // Presence heartbeat
-              if (username) {
-                ws.send(JSON.stringify({ type: 'heartbeat', username }));
-              }
+                      const username = (window.currentUsername || localStorage.getItem('consensusUsername') || '').trim();
+                      // Regular ping for latency
+                      ws.send(JSON.stringify({ type: 'ping' }));
+                      // Presence heartbeat
+                      if (username) {
+                          ws.send(JSON.stringify({ type: 'heartbeat', username }));
+                      }
                   }
               }, 30000);
-
-          // Identify with current username as soon as connected
-          ensureIdentify();
           };
 
           ws.onmessage = (event) => {
@@ -583,7 +578,10 @@
   window.addEventListener('consensus:username-set', (event) => {
       if (!event) return;
       const nextUsername = event.detail && event.detail.username;
-      updateKnownUsername(nextUsername);
+      // Username tracking for presence - stored in window.currentUsername
+      if (nextUsername) {
+          window.currentUsername = nextUsername;
+      }
   });
 
   // Railway-enhanced answer submission
