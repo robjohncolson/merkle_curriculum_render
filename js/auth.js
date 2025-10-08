@@ -69,10 +69,21 @@ function generateRandomUsername() {
  * Main entry point for username workflow
  * Checks for saved username or shows prompt
  */
+function broadcastUsernameChange(username) {
+    if (typeof window !== 'undefined') {
+        const trimmed = (username || '').trim();
+        window.currentUsername = trimmed || null;
+        window.dispatchEvent(new CustomEvent('consensus:username-set', {
+            detail: { username: trimmed }
+        }));
+    }
+}
+
 function promptUsername() {
     const savedUsername = localStorage.getItem('consensusUsername');
     if (savedUsername) {
         currentUsername = savedUsername;
+        broadcastUsernameChange(currentUsername);
         initClassData();
         initializeProgressTracking(); // Initialize progress tracking for returning user
         showUsernameWelcome();
@@ -336,6 +347,7 @@ window.rerollUsername = function() {
 window.acceptUsername = function(name) {
     currentUsername = name;
     localStorage.setItem('consensusUsername', currentUsername);
+    broadcastUsernameChange(currentUsername);
 
     // Save to recent usernames list
     let recentUsernames = JSON.parse(localStorage.getItem('recentUsernames') || '[]');

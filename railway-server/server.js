@@ -1,11 +1,18 @@
 // Simple Railway server for AP Stats Turbo Mode
 // No build step required - just plain Node.js
 
-import express from 'express';
-import cors from 'cors';
-import { WebSocketServer } from 'ws';
-import { createClient } from '@supabase/supabase-js';
-import dotenv from 'dotenv';
+const express = require('express');
+const cors = require('cors');
+const { WebSocketServer } = require('ws');
+const { createClient } = require('@supabase/supabase-js');
+const dotenv = require('dotenv');
+
+const {
+  buildSyncIndexFromAnswers,
+  normalizeTimestamp,
+  parseUnitLesson,
+  computeUnitHash
+} = require('./sync_utils');
 
 // Load environment variables
 dotenv.config();
@@ -31,6 +38,13 @@ const cache = {
   TTL: 30000 // 30 seconds cache
 };
 
+const syncCache = {
+  units: new Map(),
+  lessonToUnit: new Map(),
+  lastBuilt: 0,
+  ttl: 60000
+};
+
 // Track connected WebSocket clients
 const wsClients = new Set();
 
@@ -44,12 +58,138 @@ function isCacheValid(lastUpdate, ttl = cache.TTL) {
   return Date.now() - lastUpdate < ttl;
 }
 
-// Convert timestamps to numbers if they're strings
-function normalizeTimestamp(timestamp) {
-  if (typeof timestamp === 'string') {
-    return new Date(timestamp).getTime();
+function getUnitIdFromLessonId(lessonId) {
+  if (typeof lessonId !== 'string') return null;
+  const match = lessonId.match(/U(\d+)-L/i);
+  if (!match) return null;
+  return `unit${parseInt(match[1], 10)}`;
+}
+
+async function rebuildFullSyncCache() {
+  const { data, error } = await supabase
+    .from('answers')
+    .select('*');
+
+  if (error) throw error;
+
+  const normalizedData = (data || []).map((answer) => ({
+    ...answer,
+    timestamp: normalizeTimestamp(answer.timestamp)
+  }));
+
+  cache.peerData = normalizedData;
+  cache.lastUpdate = Date.now();
+
+  const { units } = buildSyncIndexFromAnswers(normalizedData);
+  syncCache.units = units;
+  syncCache.lessonToUnit = new Map();
+  units.forEach((unitData, unitId) => {
+    if (unitData?.lessons) {
+      unitData.lessons.forEach((_, lessonId) => {
+        syncCache.lessonToUnit.set(lessonId, unitId);
+      });
+    }
+  });
+  syncCache.lastBuilt = Date.now();
+}
+
+function isSyncCacheFresh() {
+  if (!syncCache.lastBuilt) {
+    return false;
   }
-  return timestamp;
+  return (Date.now() - syncCache.lastBuilt) < syncCache.ttl;
+}
+
+async function ensureSyncCache(force = false) {
+  if (!force && isSyncCacheFresh()) {
+    return;
+  }
+  await rebuildFullSyncCache();
+}
+
+function updateLessonMappingsForUnit(unitId, unitData) {
+  const activeLessons = new Set();
+  if (unitData?.lessons) {
+    unitData.lessons.forEach((_, lessonId) => {
+      activeLessons.add(lessonId);
+      syncCache.lessonToUnit.set(lessonId, unitId);
+    });
+  }
+
+  Array.from(syncCache.lessonToUnit.entries()).forEach(([lessonId, mappedUnit]) => {
+    if (mappedUnit === unitId && !activeLessons.has(lessonId)) {
+      syncCache.lessonToUnit.delete(lessonId);
+    }
+  });
+}
+
+async function refreshUnitCache(unitId) {
+  if (!unitId) return null;
+  const match = unitId.match(/unit(\d+)/i);
+  if (!match) return null;
+  const unitNumber = parseInt(match[1], 10);
+  const prefix = `U${unitNumber}-`;
+
+  const { data, error } = await supabase
+    .from('answers')
+    .select('*')
+    .ilike('question_id', `${prefix}%`);
+
+  if (error) throw error;
+
+  const normalized = (data || []).map((answer) => ({
+    ...answer,
+    timestamp: normalizeTimestamp(answer.timestamp)
+  }));
+
+  const { units } = buildSyncIndexFromAnswers(normalized);
+  const unitData = units.get(unitId) || {
+    hash: computeUnitHash(new Map()),
+    lessons: new Map(),
+    lastUpdated: Date.now()
+  };
+
+  syncCache.units.set(unitId, unitData);
+  updateLessonMappingsForUnit(unitId, unitData);
+  syncCache.lastBuilt = Date.now();
+
+  return unitData;
+}
+
+async function refreshUnitCacheByQuestion(questionId) {
+  const mapping = parseUnitLesson(questionId);
+  if (!mapping) return null;
+  const unitData = await refreshUnitCache(mapping.unitId);
+  const lessonData = unitData?.lessons?.get(mapping.lessonId) || null;
+  return {
+    unitId: mapping.unitId,
+    lessonId: mapping.lessonId,
+    unitHash: unitData?.hash || null,
+    lessonHash: lessonData?.hash || null,
+    lessonAnswerCount: lessonData?.answerCount || 0
+  };
+}
+
+async function ensureLessonCache(lessonId) {
+  if (!lessonId) return null;
+  let unitId = syncCache.lessonToUnit.get(lessonId);
+  if (!unitId) {
+    unitId = getUnitIdFromLessonId(lessonId);
+  }
+  if (!unitId) return null;
+
+  let unitData = syncCache.units.get(unitId);
+  if (!unitData || !unitData.lessons?.has(lessonId)) {
+    unitData = await refreshUnitCache(unitId);
+  }
+
+  if (!unitData) return null;
+  const lessonData = unitData.lessons?.get(lessonId);
+  if (!lessonData) {
+    return null;
+  }
+
+  return { unitId, unitData, lessonData };
 }
 
 // ============================
@@ -191,6 +331,91 @@ app.get('/api/question-stats/:questionId', async (req, res) => {
   }
 });
 
+app.get('/api/sync/manifest', async (req, res) => {
+  try {
+    await ensureSyncCache();
+
+    const units = {};
+    syncCache.units.forEach((unitData, unitId) => {
+      units[unitId] = {
+        hash: unitData.hash,
+        lessonCount: unitData.lessons?.size || 0,
+        updatedAt: unitData.lastUpdated || syncCache.lastBuilt
+      };
+    });
+
+    res.json({
+      generatedAt: Date.now(),
+      unitCount: Object.keys(units).length,
+      units
+    });
+  } catch (error) {
+    console.error('Error building sync manifest:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/sync/unit/:unitId', async (req, res) => {
+  try {
+    const { unitId } = req.params;
+    await ensureSyncCache();
+
+    let unitData = syncCache.units.get(unitId);
+    if (!unitData) {
+      unitData = await refreshUnitCache(unitId);
+    }
+
+    if (!unitData) {
+      return res.status(404).json({ error: 'Unit not found' });
+    }
+
+    const lessons = {};
+    unitData.lessons?.forEach((lessonData, lessonId) => {
+      lessons[lessonId] = {
+        hash: lessonData.hash,
+        answerCount: lessonData.answerCount || (lessonData.answers?.length || 0),
+        updatedAt: lessonData.lastUpdated || unitData.lastUpdated || syncCache.lastBuilt
+      };
+    });
+
+    res.json({
+      unitId,
+      hash: unitData.hash,
+      lessons,
+      lessonCount: Object.keys(lessons).length,
+      updatedAt: unitData.lastUpdated || syncCache.lastBuilt
+    });
+  } catch (error) {
+    console.error('Error fetching unit manifest:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/data/lesson/:lessonId', async (req, res) => {
+  try {
+    const { lessonId } = req.params;
+    const lessonInfo = await ensureLessonCache(lessonId);
+
+    if (!lessonInfo) {
+      return res.status(404).json({ error: 'Lesson not found' });
+    }
+
+    const { unitId, lessonData } = lessonInfo;
+
+    res.json({
+      unitId,
+      lessonId,
+      hash: lessonData.hash,
+      answers: lessonData.answers || [],
+      answerCount: lessonData.answerCount || (lessonData.answers?.length || 0),
+      updatedAt: lessonData.lastUpdated || syncCache.lastBuilt
+    });
+  } catch (error) {
+    console.error('Error fetching lesson data:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Submit answer (proxies to Supabase and broadcasts via WebSocket)
 app.post('/api/submit-answer', async (req, res) => {
   try {
@@ -215,13 +440,20 @@ app.post('/api/submit-answer', async (req, res) => {
     cache.lastUpdate = 0;
     cache.questionStats.delete(question_id);
 
+    const manifestUpdate = await refreshUnitCacheByQuestion(question_id);
+
     // Broadcast to WebSocket clients
     const update = {
       type: 'answer_submitted',
       username,
       question_id,
       answer_value,
-      timestamp: normalizedTimestamp
+      timestamp: normalizedTimestamp,
+      unitId: manifestUpdate?.unitId || null,
+      lessonId: manifestUpdate?.lessonId || null,
+      unitHash: manifestUpdate?.unitHash || null,
+      lessonHash: manifestUpdate?.lessonHash || null,
+      lessonAnswerCount: manifestUpdate?.lessonAnswerCount || 0
     };
 
     broadcastToClients(update);
@@ -229,7 +461,8 @@ app.post('/api/submit-answer', async (req, res) => {
     res.json({
       success: true,
       timestamp: normalizedTimestamp,
-      broadcast: wsClients.size
+      broadcast: wsClients.size,
+      manifest: manifestUpdate
     });
 
   } catch (error) {
@@ -264,11 +497,38 @@ app.post('/api/batch-submit', async (req, res) => {
     cache.lastUpdate = 0;
     cache.questionStats.clear();
 
+    const affectedUnits = new Set();
+    normalizedAnswers.forEach((answer) => {
+      const mapping = parseUnitLesson(answer.question_id);
+      if (mapping) {
+        affectedUnits.add(mapping.unitId);
+      }
+    });
+
+    const manifestUpdates = [];
+    for (const unitId of affectedUnits) {
+      const unitData = await refreshUnitCache(unitId);
+      const lessons = [];
+      unitData?.lessons?.forEach((lessonData, lessonId) => {
+        lessons.push({
+          lessonId,
+          hash: lessonData.hash,
+          answerCount: lessonData.answerCount || (lessonData.answers?.length || 0)
+        });
+      });
+      manifestUpdates.push({
+        unitId,
+        unitHash: unitData?.hash || null,
+        lessons
+      });
+    }
+
     // Broadcast batch update
     const update = {
       type: 'batch_submitted',
       count: normalizedAnswers.length,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      units: manifestUpdates
     };
 
     broadcastToClients(update);
@@ -276,7 +536,8 @@ app.post('/api/batch-submit', async (req, res) => {
     res.json({
       success: true,
       count: normalizedAnswers.length,
-      broadcast: wsClients.size
+      broadcast: wsClients.size,
+      units: manifestUpdates
     });
 
   } catch (error) {
@@ -326,6 +587,10 @@ const server = app.listen(PORT, () => {
 });
 
 const wss = new WebSocketServer({ server });
+
+ensureSyncCache(true).catch((error) => {
+  console.error('Initial sync cache warmup failed:', error);
+});
 
 wss.on('connection', (ws) => {
   console.log('New WebSocket client connected');
@@ -468,6 +733,13 @@ const subscription = supabase
 
       // Invalidate cache
       cache.lastUpdate = 0;
+
+      const questionId = payload.new?.question_id || payload.old?.question_id;
+      if (questionId) {
+        refreshUnitCacheByQuestion(questionId).catch((error) => {
+          console.error('Failed to refresh unit cache from realtime update:', error);
+        });
+      }
 
       // Broadcast to all WebSocket clients
       broadcastToClients({
