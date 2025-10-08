@@ -563,7 +563,8 @@
                       username: data.username,
                       question_id: data.question_id,
                       answer_value: data.answer_value,
-                      timestamp: data.timestamp
+                      timestamp: data.timestamp,
+                      source: 'railway-broadcast'
                   }
               }));
               break;
