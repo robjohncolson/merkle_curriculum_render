@@ -159,8 +159,7 @@
           question_id: normalized.question_id,
           answer_value: normalized.answer_value,
           timestamp: normalized.timestamp,
-          alreadyMerged: true,
-          source: 'merkle-sync'
+          alreadyMerged: true
       };
 
       try {
