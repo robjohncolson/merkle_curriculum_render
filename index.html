@@ -5169,9 +5169,13 @@ if (chartInstances[`dotplot-${questionId}`]) {
         // --- Main Event Listener for Real-Time Updates ---
         window.addEventListener('peer:answer', (event) => {
             const detail = event?.detail || {};
+            const alreadyMerged = detail.alreadyMerged === true;
 
-            // 1. Update the application's core state
-            const stateWasUpdated = mergePeerAnswer(detail);
+            let stateWasUpdated = true;
+            if (!alreadyMerged) {
+                // 1. Update the application's core state
+                stateWasUpdated = mergePeerAnswer(detail);
+            }
 
             if (stateWasUpdated) {
                 // 2. If state was updated, handle sprite animation
