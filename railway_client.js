@@ -155,6 +155,19 @@
       }
 
       try {
+          window.dispatchEvent(new CustomEvent('peer:answer', {
+              detail: {
+                  username: normalized.username,
+                  question_id: normalized.question_id,
+                  answer_value: normalized.answer_value,
+                  timestamp: normalized.timestamp
+              }
+          }));
+      } catch (error) {
+          console.warn("Failed to dispatch peer:answer event", error);
+      }
+
+      try {
           if (window.spriteManager && typeof window.checkIfAnswerCorrect === 'function') {
               const isCorrect = window.checkIfAnswerCorrect(normalized.question_id, normalized.answer_value);
               window.spriteManager.handlePeerAnswer(normalized.username, isCorrect);
