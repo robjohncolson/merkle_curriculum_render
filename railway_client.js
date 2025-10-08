@@ -20,14 +20,14 @@
 
       return normalizedScheme.replace(/\/+$/, '');
   })();
+  const rawRailwayServerUrl = window.RAILWAY_SERVER_URL || 'https://your-app.up.railway.app';
+  const RAILWAY_SERVER_URL = rawRailwayServerUrl.replace(/\/+$/, '');
   const USE_RAILWAY = window.USE_RAILWAY || false;
 
   const HashUtils = window.HashUtils || {};
   const manifestStorageKey = 'railway_manifest_cache_v1';
 
   let lastSyncSummary = null;
-  let knownUsername = ((window.currentUsername || localStorage.getItem('consensusUsername') || '') + '').trim();
-  let lastIdentifiedUsername = null;
 
   function buildRailwayUrl(path = '') {
       if (!RAILWAY_SERVER_URL) {
@@ -135,35 +135,6 @@
       return peerData;
   }
 
-  function ensureIdentify() {
-      if (!knownUsername) return;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      if (lastIdentifiedUsername === knownUsername) return;
-
-      try {
-          ws.send(JSON.stringify({ type: 'identify', username: knownUsername }));
-          lastIdentifiedUsername = knownUsername;
-      } catch (error) {
-          console.warn('Failed to send identify message to Railway server', error);
-      }
-  }
-
-  function updateKnownUsername(username) {
-      const trimmed = (username || '').trim();
-      if (!trimmed) {
-          knownUsername = '';
-          return;
-      }
-
-      if (knownUsername === trimmed && lastIdentifiedUsername === trimmed) {
-          return;
-      }
-
-      knownUsername = trimmed;
-      lastIdentifiedUsername = null;
-      ensureIdentify();
-  }
-
   function normalizeDetail(detail) {
       return {
           username: (detail.username || '').trim(),
@@ -175,8 +146,7 @@
       };
   }
 
-  function applyLessonAnswer(detail, options = {}) {
-      const { emitEvent = false } = options;
+  function applyLessonAnswer(detail) {
       const normalized = normalizeDetail(detail);
       if (!normalized.username || !normalized.question_id) return false;
 
@@ -197,20 +167,10 @@
       try {
           if (window.spriteManager && typeof window.checkIfAnswerCorrect === 'function') {
               const isCorrect = window.checkIfAnswerCorrect(normalized.question_id, normalized.answer_value);
-              if (!emitEvent) {
-                  window.spriteManager.handlePeerAnswer(normalized.username, isCorrect);
-              }
+              window.spriteManager.handlePeerAnswer(normalized.username, isCorrect);
           }
       } catch (error) {
           console.warn('Sprite update failed after lesson sync', error);
-      }
-
-      if (emitEvent && typeof window.dispatchEvent === 'function') {
-          try {
-              window.dispatchEvent(new CustomEvent('peer:answer', { detail: { ...normalized } }));
-          } catch (error) {
-              console.warn('Failed to dispatch peer:answer event after lesson sync', error);
-          }
       }
 
       if (typeof requestAnimationFrame === 'function') {
@@ -228,7 +188,7 @@
           });
       }
 
-      return normalized;
+      return true;
   }
 
   function ingestLessonAnswers(lessonId, answers = []) {
@@ -297,6 +257,7 @@
 
       try {
           const manifest = await fetchJson(buildRailwayUrl('/api/sync/manifest'));
+          const manifest = await fetchJson(`${RAILWAY_SERVER_URL}/api/sync/manifest`);
           saveStoredManifest({
               generatedAt: manifest.generatedAt,
               units: manifest.units || {}
@@ -330,6 +291,7 @@
 
           for (const unitId of unitsNeedingDetail) {
               const unitManifest = await fetchJson(buildRailwayUrl(`/api/sync/unit/${unitId}`));
+              const unitManifest = await fetchJson(`${RAILWAY_SERVER_URL}/api/sync/unit/${unitId}`);
               const serverLessons = unitManifest.lessons || {};
               const localLessons = localUnits[unitId]?.lessons || {};
 
@@ -352,7 +314,7 @@
                       continue; // already in sync
                   }
 
-                  const lessonPayload = await fetchJson(buildRailwayUrl(`/api/data/lesson/${lessonId}`));
+                  const lessonPayload = await fetchJson(`${RAILWAY_SERVER_URL}/api/data/lesson/${lessonId}`);
                   lessonsFetched += 1;
                   const applied = ingestLessonAnswers(lessonId, lessonPayload.answers || []);
                   answersApplied += applied;
@@ -594,15 +556,15 @@
                   break;
               }
               updateBroadcastManifest(data);
-              const applied = applyLessonAnswer({
-                  username: data.username,
-                  question_id: data.question_id,
-                  answer_value: data.answer_value,
-                  timestamp: data.timestamp
-              }, { emitEvent: true });
-              if (!applied) {
-                  console.log(`ℹ️ Received answer for ${data.question_id} but it was already current locally.`);
-              }
+              console.log(`📨 Received answer for ${data.question_id}, dispatching 'peer:answer' event.`);
+              window.dispatchEvent(new CustomEvent('peer:answer', {
+                  detail: {
+                      username: data.username,
+                      question_id: data.question_id,
+                      answer_value: data.answer_value,
+                      timestamp: data.timestamp
+                  }
+              }));
               break;
 
           case 'batch_submitted':

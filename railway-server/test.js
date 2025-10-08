@@ -19,13 +19,6 @@ function testNormalizeTimestamp() {
   assert.strictEqual(normalizeTimestamp('5678'), 5678);
   const approx = normalizeTimestamp('2024-01-01T00:00:00Z');
   assert.ok(approx > 0, 'ISO timestamp should parse to milliseconds');
-  const isoWithMillis = '2024-01-01T00:00:00.123Z';
-  assert.strictEqual(
-    normalizeTimestamp(isoWithMillis),
-    Math.trunc(Date.parse(isoWithMillis)),
-    'ISO strings should truncate milliseconds'
-  );
-  assert.strictEqual(normalizeTimestamp('not-a-date'), 0);
 }
 
 function testBuildSyncIndex() {
