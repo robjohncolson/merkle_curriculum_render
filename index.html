@@ -820,33 +820,53 @@ function ensureClassDataInitialized() {
  * @returns {boolean} - True if the state was updated, false otherwise.
  */
 function mergePeerAnswer(detail) {
-    const { username, question_id, answer_value, timestamp } = detail;
+    const { username, question_id, answer_value } = detail;
+    const parsedTimestamp = Number(detail.timestamp);
+    const hasValidTimestamp = Number.isFinite(parsedTimestamp);
+    const incomingTimestamp = hasValidTimestamp ? parsedTimestamp : 0;
+    if (!hasValidTimestamp) {
+        console.warn(`[State Update] Received answer without a valid timestamp for ${username} on ${question_id}`);
+    }
+    detail.timestamp = incomingTimestamp;
+    const sourceTag = detail.source ? `[${detail.source}] ` : '';
     ensureClassDataInitialized();
 
     if (!classData.users[username]) {
         classData.users[username] = { answers: {}, reasons: {}, timestamps: {}, attempts: {} };
     }
 
-    const existingAnswer = classData.users[username].answers[question_id];
-    const existingTimestamp = classData.users[username].timestamps[question_id] || existingAnswer?.timestamp || 0;
+    const userRecord = classData.users[username];
+    const existingAnswer = userRecord.answers[question_id];
+    const storedTimestamp = (userRecord.timestamps && userRecord.timestamps[question_id]) ?? existingAnswer?.timestamp ?? 0;
+    const existingTimestamp = Number(storedTimestamp) || 0;
+    const existingValue = existingAnswer?.value;
 
-    if (timestamp > existingTimestamp) {
+    if (incomingTimestamp > existingTimestamp) {
         // 1. Update in-memory `classData`
-        classData.users[username].answers[question_id] = { value: answer_value, timestamp: timestamp };
-        classData.users[username].timestamps[question_id] = timestamp;
+        userRecord.answers[question_id] = { value: answer_value, timestamp: incomingTimestamp };
+        userRecord.timestamps[question_id] = incomingTimestamp;
         saveClassData(); // Persists the whole classData object
 
         // 2. Update legacy `answers_[username]` key for backward compatibility
         const legacyKey = `answers_${username}`;
         const legacyAnswers = JSON.parse(localStorage.getItem(legacyKey) || '{}');
-        legacyAnswers[question_id] = { value: answer_value, timestamp: timestamp };
+        legacyAnswers[question_id] = { value: answer_value, timestamp: incomingTimestamp };
         localStorage.setItem(legacyKey, JSON.stringify(legacyAnswers));
 
-        console.log(`[State Update] Merged new answer for ${username} on ${question_id}`);
+        detail.mergeStatus = 'merged';
+        console.log(`${sourceTag}[State Update] Merged new answer for ${username} on ${question_id}`);
         return true;
     }
 
-    console.log(`[State Update] Ignored stale answer for ${username} on ${question_id}`);
+    const isDuplicate = incomingTimestamp === existingTimestamp && existingTimestamp > 0 && existingValue === answer_value;
+    if (isDuplicate) {
+        detail.mergeStatus = 'duplicate';
+        console.log(`${sourceTag}[State Update] Skipped duplicate answer for ${username} on ${question_id}`);
+        return false;
+    }
+
+    detail.mergeStatus = 'stale';
+    console.log(`${sourceTag}[State Update] Ignored stale answer for ${username} on ${question_id} (incoming ${incomingTimestamp}, existing ${existingTimestamp})`);
     return false;
 }
 
@@ -5169,9 +5189,13 @@ if (chartInstances[`dotplot-${questionId}`]) {
         // --- Main Event Listener for Real-Time Updates ---
         window.addEventListener('peer:answer', (event) => {
             const detail = event?.detail || {};
+            const alreadyMerged = detail.alreadyMerged === true;
 
-            // 1. Update the application's core state
-            const stateWasUpdated = mergePeerAnswer(detail);
+            let stateWasUpdated = true;
+            if (!alreadyMerged) {
+                // 1. Update the application's core state
+                stateWasUpdated = mergePeerAnswer(detail);
+            }
 
             if (stateWasUpdated) {
                 // 2. If state was updated, handle sprite animation

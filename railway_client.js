@@ -154,14 +154,18 @@
           return false;
       }
 
+      const eventDetail = {
+          username: normalized.username,
+          question_id: normalized.question_id,
+          answer_value: normalized.answer_value,
+          timestamp: normalized.timestamp,
+          alreadyMerged: true,
+          source: 'merkle-sync'
+      };
+
       try {
           window.dispatchEvent(new CustomEvent('peer:answer', {
-              detail: {
-                  username: normalized.username,
-                  question_id: normalized.question_id,
-                  answer_value: normalized.answer_value,
-                  timestamp: normalized.timestamp
-              }
+              detail: eventDetail
           }));
       } catch (error) {
           console.warn("Failed to dispatch peer:answer event", error);
@@ -560,7 +564,8 @@
                       username: data.username,
                       question_id: data.question_id,
                       answer_value: data.answer_value,
-                      timestamp: data.timestamp
+                      timestamp: data.timestamp,
+                      source: 'railway-broadcast'
                   }
               }));
               break;
