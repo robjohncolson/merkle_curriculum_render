@@ -1865,6 +1865,11 @@ if (continueBtn) {
                 // Set the username first
                 currentUsername = username;
                 localStorage.setItem('consensusUsername', username);
+                if (typeof broadcastUsernameChange === 'function') {
+                    broadcastUsernameChange(currentUsername);
+                } else if (typeof window !== 'undefined') {
+                    window.currentUsername = currentUsername;
+                }
                 initClassData();
 
                 let userData = null;

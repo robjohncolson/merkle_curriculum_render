@@ -453,7 +453,7 @@
               if (wsPingInterval) clearInterval(wsPingInterval);
               wsPingInterval = setInterval(() => {
                   if (ws.readyState === WebSocket.OPEN) {
-              const username = (window.currentUsername || localStorage.getItem('consensusUsername') || '').trim();
+              const username = knownUsername || (window.currentUsername || localStorage.getItem('consensusUsername') || '').trim();
               // Regular ping for latency
               ws.send(JSON.stringify({ type: 'ping' }));
               // Presence heartbeat
@@ -464,10 +464,7 @@
               }, 30000);
 
           // Identify with current username as soon as connected
-          const username = (window.currentUsername || localStorage.getItem('consensusUsername') || '').trim();
-          if (username) {
-            ws.send(JSON.stringify({ type: 'identify', username }));
-          }
+          ensureIdentify();
           };
 
           ws.onmessage = (event) => {
@@ -482,6 +479,7 @@
           ws.onclose = () => {
               console.log('WebSocket disconnected');
               wsConnected = false;
+              lastIdentifiedUsername = null;
 
               // Disable turbo mode when WebSocket disconnects
               window.dispatchEvent(new CustomEvent('turboModeChanged', {
@@ -504,6 +502,7 @@
           ws.onerror = (error) => {
               console.error('WebSocket error:', error);
               wsConnected = false;
+              lastIdentifiedUsername = null;
 
               // Disable turbo mode when WebSocket errors
               window.dispatchEvent(new CustomEvent('turboModeChanged', {
@@ -590,6 +589,12 @@
               console.log('Unknown WebSocket message type:', data.type);
       }
   }
+
+  window.addEventListener('consensus:username-set', (event) => {
+      if (!event) return;
+      const nextUsername = event.detail && event.detail.username;
+      updateKnownUsername(nextUsername);
+  });
 
   // Railway-enhanced answer submission
   async function submitAnswerViaRailway(username, questionId, answerValue, timestamp) {
