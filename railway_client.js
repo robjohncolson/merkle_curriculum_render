@@ -3,26 +3,16 @@
 
 ;(function () {
   // Configuration
-  const rawRailwayServerUrl = window.RAILWAY_SERVER_URL;
-  const RAILWAY_SERVER_URL = (() => {
-      if (typeof rawRailwayServerUrl !== 'string') {
-          return '';
-      }
-
-      const trimmed = rawRailwayServerUrl.trim();
-      if (!trimmed) {
-          return '';
-      }
-
-      const normalizedScheme = trimmed
-          .replace(/^ws:\/\//i, 'http://')
-          .replace(/^wss:\/\//i, 'https://');
-
-      return normalizedScheme.replace(/\/+$/, '');
-  })();
-  const rawRailwayServerUrl = window.RAILWAY_SERVER_URL || 'https://your-app.up.railway.app';
-  const RAILWAY_SERVER_URL = rawRailwayServerUrl.replace(/\/+$/, '');
-  const USE_RAILWAY = window.USE_RAILWAY || false;
+  const DEFAULT_RAILWAY_URL = 'https://your-app.up.railway.app';
+  const rawRailwayServerUrl =
+      typeof window.RAILWAY_SERVER_URL === 'string'
+          ? window.RAILWAY_SERVER_URL.trim()
+          : '';
+  const resolvedRailwayUrl = (rawRailwayServerUrl || DEFAULT_RAILWAY_URL)
+      .replace(/^ws:\/\//i, 'http://')
+      .replace(/^wss:\/\//i, 'https://');
+  const RAILWAY_SERVER_URL = resolvedRailwayUrl.replace(/\/+$/, '');
+  const USE_RAILWAY = !!window.USE_RAILWAY;
 
   const HashUtils = window.HashUtils || {};
   const manifestStorageKey = 'railway_manifest_cache_v1';
