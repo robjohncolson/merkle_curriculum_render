@@ -216,15 +216,21 @@
           return false;
       }
 
-      if (dispatchEvent) {
-          const eventDetail = {
-              username: normalized.username,
-              question_id: normalized.question_id,
-              answer_value: normalized.answer_value,
-              timestamp: normalized.timestamp,
-              alreadyMerged: true,
-              source: normalized.source || defaultSource
-          };
+      const eventDetail = {
+          username: normalized.username,
+          question_id: normalized.question_id,
+          answer_value: normalized.answer_value,
+          timestamp: normalized.timestamp,
+          alreadyMerged: true
+      };
+
+      try {
+          window.dispatchEvent(new CustomEvent('peer:answer', {
+              detail: eventDetail
+          }));
+      } catch (error) {
+          console.warn("Failed to dispatch peer:answer event", error);
+      }
 
           try {
               window.dispatchEvent(new CustomEvent('peer:answer', {
