@@ -18,6 +18,66 @@
   const manifestStorageKey = 'railway_manifest_cache_v1';
 
   let lastSyncSummary = null;
+  const syncState = {
+      activeMode: 'pending',
+      merkleHealthy: false,
+      lastModeChange: null,
+      lastMerkleError: null,
+      lastLegacyTimestamp: 0
+  };
+  window.railwaySyncMode = syncState.activeMode;
+
+  function updateSyncMode(nextMode, options = {}) {
+      if (!nextMode) {
+          return;
+      }
+
+      if (nextMode === 'merkle') {
+          syncState.merkleHealthy = true;
+          syncState.lastMerkleError = null;
+          syncState.lastLegacyTimestamp = 0;
+      } else if (options.merkleError instanceof Error) {
+          syncState.lastMerkleError = options.merkleError;
+          syncState.merkleHealthy = false;
+      }
+
+      if (syncState.activeMode === nextMode) {
+          return;
+      }
+
+      syncState.activeMode = nextMode;
+      syncState.lastModeChange = Date.now();
+      if (nextMode !== 'merkle' && nextMode !== 'pending') {
+          syncState.merkleHealthy = false;
+      }
+
+      window.railwaySyncMode = nextMode;
+      try {
+          window.dispatchEvent(new CustomEvent('railway:sync-mode-changed', {
+              detail: { mode: nextMode }
+          }));
+      } catch (error) {
+          console.warn('Failed to dispatch railway:sync-mode-changed event', error);
+      }
+
+      console.log(`🚦 Railway sync mode switched to ${nextMode}`);
+  }
+
+  function callDirectSupabasePeerPull() {
+      const fallbackFn = typeof window.originalPullPeerData === 'function'
+          ? window.originalPullPeerData
+          : window.pullPeerDataFromSupabase;
+
+      if (typeof fallbackFn === 'function') {
+          try {
+              return fallbackFn();
+          } catch (error) {
+              console.error('Direct Supabase peer pull failed:', error);
+          }
+      }
+
+      return null;
+  }
 
   function buildRailwayUrl(path = '') {
       if (!RAILWAY_SERVER_URL) {
@@ -125,19 +185,21 @@
       return peerData;
   }
 
-  function normalizeDetail(detail) {
+  function normalizeDetail(detail, defaultSource = '') {
       return {
           username: (detail.username || '').trim(),
           question_id: detail.question_id,
           answer_value: detail.answer_value,
           timestamp: HashUtils && typeof HashUtils.normalizeTimestamp === 'function'
               ? HashUtils.normalizeTimestamp(detail.timestamp)
-              : parseInt(detail.timestamp, 10) || Date.now()
+              : parseInt(detail.timestamp, 10) || Date.now(),
+          source: detail.source || defaultSource || ''
       };
   }
 
-  function applyLessonAnswer(detail) {
-      const normalized = normalizeDetail(detail);
+  function applyLessonAnswer(detail, options = {}) {
+      const { defaultSource = 'merkle-sync', dispatchEvent = true } = options || {};
+      const normalized = normalizeDetail(detail, defaultSource);
       if (!normalized.username || !normalized.question_id) return false;
 
       if (typeof window.ensureClassDataInitialized === 'function') {
@@ -154,41 +216,47 @@
           return false;
       }
 
-      try {
-          window.dispatchEvent(new CustomEvent('peer:answer', {
-              detail: {
-                  username: normalized.username,
-                  question_id: normalized.question_id,
-                  answer_value: normalized.answer_value,
-                  timestamp: normalized.timestamp
-              }
-          }));
-      } catch (error) {
-          console.warn("Failed to dispatch peer:answer event", error);
-      }
+      if (dispatchEvent) {
+          const eventDetail = {
+              username: normalized.username,
+              question_id: normalized.question_id,
+              answer_value: normalized.answer_value,
+              timestamp: normalized.timestamp,
+              alreadyMerged: true,
+              source: normalized.source || defaultSource
+          };
 
-      try {
-          if (window.spriteManager && typeof window.checkIfAnswerCorrect === 'function') {
-              const isCorrect = window.checkIfAnswerCorrect(normalized.question_id, normalized.answer_value);
-              window.spriteManager.handlePeerAnswer(normalized.username, isCorrect);
+          try {
+              window.dispatchEvent(new CustomEvent('peer:answer', {
+                  detail: eventDetail
+              }));
+          } catch (error) {
+              console.warn("Failed to dispatch peer:answer event", error);
           }
-      } catch (error) {
-          console.warn('Sprite update failed after lesson sync', error);
-      }
 
-      if (typeof requestAnimationFrame === 'function') {
-          requestAnimationFrame(() => {
-              try {
-                  if (typeof window.refreshQuestionIfVisible === 'function') {
-                      window.refreshQuestionIfVisible(normalized.question_id);
-                  }
-                  if (typeof window.updatePeerDataTimestamp === 'function') {
-                      window.updatePeerDataTimestamp();
-                  }
-              } catch (error) {
-                  console.warn('UI refresh failed after lesson sync', error);
+          try {
+              if (window.spriteManager && typeof window.checkIfAnswerCorrect === 'function') {
+                  const isCorrect = window.checkIfAnswerCorrect(normalized.question_id, normalized.answer_value);
+                  window.spriteManager.handlePeerAnswer(normalized.username, isCorrect);
               }
-          });
+          } catch (error) {
+              console.warn('Sprite update failed after lesson sync', error);
+          }
+
+          if (typeof requestAnimationFrame === 'function') {
+              requestAnimationFrame(() => {
+                  try {
+                      if (typeof window.refreshQuestionIfVisible === 'function') {
+                          window.refreshQuestionIfVisible(normalized.question_id);
+                      }
+                      if (typeof window.updatePeerDataTimestamp === 'function') {
+                          window.updatePeerDataTimestamp();
+                      }
+                  } catch (error) {
+                      console.warn('UI refresh failed after lesson sync', error);
+                  }
+              });
+          }
       }
 
       return true;
@@ -201,9 +269,10 @@
               username: answer.username,
               question_id: answer.question_id,
               answer_value: answer.answer_value,
-              timestamp: answer.timestamp
+              timestamp: answer.timestamp,
+              source: 'merkle-sync'
           };
-          if (applyLessonAnswer(detail)) {
+          if (applyLessonAnswer(detail, { defaultSource: 'merkle-sync' })) {
               applied += 1;
           }
       });
@@ -342,8 +411,11 @@
               console.log(`✅ Merkle sync: updated ${lessonsFetched} lessons with ${answersApplied} answers.`);
           }
 
+          updateSyncMode('merkle');
+
           return lastSyncSummary;
       } catch (error) {
+          updateSyncMode('merkle-error', { merkleError: error });
           console.error('Merkle sync failed:', error);
           throw error;
       }
@@ -420,6 +492,7 @@
           .catch(error => {
               console.error('❌ Railway server unavailable:', error);
               console.log('Falling back to direct Supabase');
+              updateSyncMode('railway-offline', { merkleError: error });
           });
 
       return true;
@@ -560,7 +633,8 @@
                       username: data.username,
                       question_id: data.question_id,
                       answer_value: data.answer_value,
-                      timestamp: data.timestamp
+                      timestamp: data.timestamp,
+                      source: 'railway-broadcast'
                   }
               }));
               break;
@@ -633,11 +707,84 @@
       }
   }
 
+  async function pullPeerDataFromRailwayLegacy(options = {}) {
+      if (!USE_RAILWAY) {
+          return callDirectSupabasePeerPull();
+      }
+
+      const sinceValue = Number.isFinite(options?.since) && options.since > 0
+          ? Math.floor(options.since)
+          : 0;
+      const queryPath = sinceValue > 0
+          ? `/api/peer-data?since=${sinceValue}`
+          : '/api/peer-data';
+
+      const endpoint = buildRailwayUrl(queryPath);
+
+      const response = await fetch(endpoint);
+      if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`Legacy peer-data request failed (${response.status}): ${text}`);
+      }
+
+      const result = await response.json();
+      const answers = Array.isArray(result?.data) ? result.data : [];
+
+      let mergedCount = 0;
+      const peerData = {};
+      let latestTimestamp = sinceValue;
+
+      answers.forEach((answer) => {
+          if (!answer || !answer.username || !answer.question_id) {
+              return;
+          }
+
+          const detail = {
+              username: answer.username,
+              question_id: answer.question_id,
+              answer_value: answer.answer_value,
+              timestamp: answer.timestamp,
+              source: 'railway-legacy'
+          };
+
+          if (applyLessonAnswer(detail, { defaultSource: 'railway-legacy' })) {
+              mergedCount += 1;
+          }
+
+          const normalizedTimestamp = HashUtils && typeof HashUtils.normalizeTimestamp === 'function'
+              ? HashUtils.normalizeTimestamp(answer.timestamp)
+              : parseInt(answer.timestamp, 10) || Date.now();
+
+          latestTimestamp = Math.max(latestTimestamp, normalizedTimestamp);
+
+          if (!peerData[answer.username]) {
+              peerData[answer.username] = { answers: {} };
+          }
+          peerData[answer.username].answers[answer.question_id] = {
+              value: answer.answer_value,
+              timestamp: normalizedTimestamp
+          };
+      });
+
+      const totalProcessed = typeof result?.filtered === 'number' ? result.filtered : answers.length;
+      console.log(`📥 Legacy Railway sync processed ${totalProcessed} answers (${mergedCount} merged)`);
+
+      if (latestTimestamp > sinceValue) {
+          syncState.lastLegacyTimestamp = latestTimestamp;
+      }
+
+      if (typeof window.updatePeerDataTimestamp === 'function') {
+          window.updatePeerDataTimestamp();
+      }
+
+      return peerData;
+  }
+
   // Pull peer data from Railway server
-  async function pullPeerDataFromRailway() {
+  async function pullPeerDataFromRailway(options = {}) {
       if (!USE_RAILWAY) {
           // Fall back to direct Supabase
-          return pullPeerDataFromSupabase();
+          return callDirectSupabasePeerPull();
       }
 
       try {
@@ -648,8 +795,22 @@
           return buildPeerDataSnapshot();
       } catch (error) {
           console.error('Railway Merkle sync failed:', error);
-          // Fall back to direct Supabase for resilience
-          return pullPeerDataFromSupabase();
+
+          try {
+              console.warn('⚠️ Falling back to legacy Railway peer sync.');
+              const legacyData = await pullPeerDataFromRailwayLegacy({
+                  since: syncState.lastLegacyTimestamp || 0,
+                  ...options
+              });
+              updateSyncMode('railway-legacy', { merkleError: error });
+              return legacyData;
+          } catch (legacyError) {
+              console.error('Railway legacy sync failed:', legacyError);
+              console.warn('⚠️ Falling back to direct Supabase peer sync.');
+              updateSyncMode('supabase-fallback', { merkleError: legacyError });
+              // Fall back to direct Supabase for resilience
+              return callDirectSupabasePeerPull();
+          }
       }
   }
 
@@ -731,10 +892,13 @@
       connectWebSocket,
       submitAnswer: submitAnswerViaRailway,
       pullPeerData: pullPeerDataFromRailway,
+      pullPeerDataLegacy: pullPeerDataFromRailwayLegacy,
       getStats: getQuestionStats,
       batchSubmit: batchSubmitViaRailway,
       isConnected: () => wsConnected,
-      getLastSyncSummary: () => lastSyncSummary
+      getLastSyncSummary: () => lastSyncSummary,
+      getSyncMode: () => syncState.activeMode,
+      isMerkleHealthy: () => syncState.merkleHealthy
   };
 
   console.log('🚂 Railway client loaded. Set USE_RAILWAY=true to enable.');
